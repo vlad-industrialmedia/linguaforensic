@@ -1184,9 +1184,9 @@ export default function App() {
           apiKey,
           model: customModel || (
             provider === "groq" ? "llama-3.3-70b-versatile" :
-            provider === "openrouter" ? "google/gemini-2.0-flash-exp:free" :
-            provider === "cohere" ? "command-r-plus" :
-            "gemini-2.5-flash"
+            provider === "openrouter" ? "meta-llama/llama-3.3-70b-instruct:free" :
+            provider === "cohere" ? "command-a-03-2025" :
+            "gemini-3.5-flash"
           )
         }
       };
@@ -2085,9 +2085,7 @@ export default function App() {
               <tr>
                 <th>Показник</th>
                 <th style="text-align: center;">Значення</th>
-                <th style="text-align: center;">Норма людини</th>
-                <th style="text-align: center;">Оцінка</th>
-                <th style="text-align: right;">Внесок</th>
+                <th style="text-align: right;">Норма людини</th>
               </tr>
             </thead>
             <tbody>
@@ -2112,15 +2110,7 @@ export default function App() {
                     </div>
                   </td>
                   <td style="text-align: center; font-family: 'JetBrains Mono', monospace; font-weight: 700;">${cat.displayValue}</td>
-                  <td style="text-align: center; color: #64748b; font-size: 11px;">${cat.normalRange}</td>
-                  <td style="text-align: center;">
-                    <span class="${cat.score === 'AI' || cat.score === 'ШІ' ? 'badge-sh' : cat.score === 'Человек' || cat.score === 'Людина' ? 'badge-hu' : 'badge-mix'}">
-                      ${cat.score}
-                    </span>
-                  </td>
-                  <td style="text-align: right; font-family: 'JetBrains Mono', monospace; font-weight: 700; color: ${cat.contribution.startsWith('+') ? '#ef4444' : '#22c55e'};">
-                    ${cat.contribution}
-                  </td>
+                  <td style="text-align: right; color: #64748b; font-size: 11px;">${cat.normalRange}</td>
                 </tr>
               `).join("")}
             </tbody>
@@ -2429,6 +2419,59 @@ export default function App() {
             }
           });
         }
+        else if (activeHighlightIndicator === "lexicalDensity") {
+          const functional = new Set(["і","та","й","в","у","на","з","із","за","до","для","про","як","що","але","це","він","вона","воно","вони","ми","ви","ти","я","який","яка","яке","які","його","її","їх","тому","при","від","під","над","перед","через","між","біля","по","проти","серед","якщо","щоб","не","ні","так","ось","ну","же","ж","навіть","тільки"]);
+          const seen = new Set();
+          inputText.split(/\\s+/).forEach(raw => {
+            const clean = raw.toLowerCase().replace(/[.,\\/#!$%\\^&\\*;:{}=\\-_\\~()?"'–—«»]/g, "").trim();
+            if (clean.length > 3 && !functional.has(clean) && !seen.has(clean)) {
+              seen.add(clean);
+              const regex = new RegExp('\\\\b(' + escapeRegex(clean) + ')\\\\b', "gi");
+              const recText = "Повнозначне слово '" + clean + "'. Висока лексична щільність характерна для сухого ШІ-стилю. Рекомендація: розбавляйте службовими словами та займенниками.";
+              const tooltipHtml = 'class="hl-span hl-lexical" data-interactive-mark="true" data-label="Лексична щільність" data-desc="Значуще слово \\'' + clean + '\\'" data-rec="' + encodeURIComponent(recText) + '"';
+              result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+            }
+          });
+        }
+        else if (activeHighlightIndicator === "hapaxLegomena") {
+          const words = inputText.split(/\\s+/);
+          const counts = {};
+          words.forEach(w => { const c = w.toLowerCase().replace(/[.,\\/#!$%\\^&\\*;:{}=\\-_\\~()?"'–—«»]/g, "").trim(); if (c.length > 3) counts[c] = (counts[c] || 0) + 1; });
+          const seen = new Set();
+          Object.keys(counts).forEach(word => {
+            if (counts[word] === 1 && !seen.has(word)) {
+              seen.add(word);
+              const regex = new RegExp('\\\\b(' + escapeRegex(word) + ')\\\\b', "gi");
+              const recText = "Унікальне слово '" + word + "' (hapax). Багато унікальних слів — ознака живого тексту; зберігайте таке різноманіття.";
+              const tooltipHtml = 'class="hl-span hl-hapax" data-interactive-mark="true" data-label="Унікальне слово" data-desc="Слово \\'' + word + '\\' вжите один раз" data-rec="' + encodeURIComponent(recText) + '"';
+              result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+            }
+          });
+        }
+        else if (activeHighlightIndicator === "hedgesCount") {
+          const hedges = ["можливо","ймовірно","мабуть","здається","на мою думку","як на мене","напевно","певною мірою","в цілому","загалом","начебто","либонь"];
+          hedges.forEach(h => {
+            const regex = new RegExp('(' + escapeRegex(h) + ')', "gi");
+            const recText = "Пом'якшувальний вислів '" + h + "'. Хеджі притаманні людському мовленню; ШІ їх майже не вживає.";
+            const tooltipHtml = 'class="hl-span hl-hedges" data-interactive-mark="true" data-label="Пом\\'якшення (hedge)" data-desc="Маркер живого мовлення" data-rec="' + encodeURIComponent(recText) + '"';
+            result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+          });
+        }
+        else if (activeHighlightIndicator === "structural" || activeHighlightIndicator === "entropy") {
+          const cliches = ["варто зазначити","важливо підкреслити","у сучасному світі","слід зазначити","таким чином","на закінчення","отже","у свою чергу","більше того","крім цього","зокрема","як-от","наприклад","важливо розуміти","не можна не помітити","можна сказати","слід додати"];
+          cliches.forEach(c => {
+            const regex = new RegExp('(' + escapeRegex(c) + ')', "gi");
+            const recText = "Структурне кліше '" + c + "'. Типовий шаблонний перехід ШІ. Рекомендація: приберіть або перефразуйте живіше.";
+            const tooltipHtml = 'class="hl-span hl-entropy" data-interactive-mark="true" data-label="Структурне кліше" data-desc="Шаблонний зворот ШІ" data-rec="' + encodeURIComponent(recText) + '"';
+            result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+          });
+        }
+      }
+      else if (selectedQuote) {
+        const escapedQuote = escapeRegex(selectedQuote);
+        const regex = new RegExp('(' + escapedQuote + ')', "gi");
+        const tooltipHtml = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="Структурний ШІ-маркер" data-desc="Виявлений шаблонний фрагмент" data-rec="' + encodeURIComponent("Цей фрагмент відповідає виявленому структурному маркеру генерації. Рекомендація: перепишіть його природнішою мовою.") + '"';
+        result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
       }
       container.innerHTML = result;
     }
@@ -2607,7 +2650,7 @@ export default function App() {
       
       {/* Top Beautiful Responsive Header */}
       <header id="app-header" className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-slate-200 px-6 py-4 shadow-xs">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
+        <div className="max-w-[1600px] mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
           <div className="flex items-center gap-3">
             <div className="p-2.5 bg-indigo-600 rounded-xl text-white shadow-md shadow-indigo-100 flex items-center justify-center">
               <Activity className="w-6 h-6" />
@@ -2688,7 +2731,7 @@ export default function App() {
       </header>
 
       {/* Main Responsive Grid Layout */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 lg:p-8 flex flex-col gap-6">
+      <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 md:p-6 lg:p-8 flex flex-col gap-6">
 
         {/* Dynamic Mode Tab Switcher with Dropdown for remaining tools */}
         <div id="mode-tabs" className="bg-white p-2 rounded-2xl border border-slate-200 shadow-3xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
@@ -2786,8 +2829,8 @@ export default function App() {
         {/* Workspace Splitting Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           
-          {/* LEFT PANEL: Input Panel & Editing tools (span 7) */}
-          <div className="lg:col-span-7 flex flex-col gap-4">
+          {/* LEFT PANEL: Input Panel & Editing tools */}
+          <div className="lg:col-span-6 flex flex-col gap-4">
 
 
             <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-col gap-4">
@@ -3215,7 +3258,7 @@ export default function App() {
           </div>
 
           {/* RIGHT PANEL: Results & Metrics Visualizer (span 5) */}
-          <div className="lg:col-span-5 flex flex-col gap-4">
+          <div className="lg:col-span-6 flex flex-col gap-4">
             
             <AnimatePresence mode="wait">
               
@@ -3429,16 +3472,12 @@ export default function App() {
                               <tr className="bg-slate-50/70 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                                 <th className="py-2 px-2.5">Категорія лінгвістики</th>
                                 <th className="py-2 px-2.5 text-center">Значення</th>
-                                <th className="py-2 px-2.5 text-center">Норма для людини</th>
-                                <th className="py-2 px-2.5 text-center">Оцінка</th>
-                                <th className="py-2 px-2.5 text-right">Внесок</th>
+                                <th className="py-2 px-2.5 text-right">Норма для людини</th>
                               </tr>
                             </thead>
                             <tbody>
                               {UNIFIED_CATEGORIES.map((cat, idx) => {
                                 const backendCat = findBackendCategory(cat.key, mode2Result.categories || []);
-                                const score = backendCat?.score ?? "Змішаний";
-                                const contribution = backendCat?.contribution ?? "0.0%";
                                 const isHighlighted = activeHighlightIndicators.includes(cat.indicatorKey);
                                 const displayValue = cat.getValue(mode2Result);
                                 
@@ -3482,21 +3521,21 @@ export default function App() {
                                   <React.Fragment key={cat.key}>
                                     {isCriticalFix && (
                                       <tr className="bg-rose-50/70 select-none pointer-events-none">
-                                        <td colSpan={5} className="py-2.5 px-3 font-extrabold text-[10px] text-rose-850 tracking-wider uppercase border-b border-rose-100">
+                                        <td colSpan={3} className="py-2.5 px-3 font-extrabold text-[10px] text-rose-850 tracking-wider uppercase border-b border-rose-100">
                                           🚨 Критичні — Потребують виправлення (Critical - Fix)
                                         </td>
                                       </tr>
                                     )}
                                     {isCaution && (
                                       <tr className="bg-amber-50/70 select-none pointer-events-none border-t border-slate-200">
-                                        <td colSpan={5} className="py-2.5 px-3 font-extrabold text-[10px] text-amber-850 tracking-wider uppercase border-b border-amber-100">
+                                        <td colSpan={3} className="py-2.5 px-3 font-extrabold text-[10px] text-amber-850 tracking-wider uppercase border-b border-amber-100">
                                           ⚠️ Чинники під загрозою — З обережністю (Critical - Caution)
                                         </td>
                                       </tr>
                                     )}
                                     {isNaturalOk && (
                                       <tr className="bg-emerald-50/70 select-none pointer-events-none border-t border-slate-200">
-                                        <td colSpan={5} className="py-2.5 px-3 font-extrabold text-[10px] text-emerald-850 tracking-wider uppercase border-b border-emerald-100">
+                                        <td colSpan={3} className="py-2.5 px-3 font-extrabold text-[10px] text-emerald-850 tracking-wider uppercase border-b border-emerald-100">
                                           ✅ Природні елементи — В порядку (Excellent / Reinforcing)
                                         </td>
                                       </tr>
@@ -3563,20 +3602,8 @@ export default function App() {
                                         {displayValue}
                                       </td>
 
-                                      <td className="py-2 px-2.5 text-center text-[10px] text-slate-500 font-medium font-sans">
+                                      <td className="py-2 px-2.5 text-right text-[10px] text-slate-500 font-medium font-sans">
                                         {cat.normalRange}
-                                      </td>
-
-                                      <td className="py-2 px-2.5 text-center">
-                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                          score === "AI" || score === "ШІ" ? "bg-rose-50 text-rose-600" : score === "Человек" || score === "Людина" ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"
-                                        }`}>
-                                          {score}
-                                        </span>
-                                      </td>
-
-                                      <td className={`py-2 px-2.5 text-right font-bold font-mono ${contribution.startsWith("+") ? "text-rose-600" : "text-emerald-600"}`}>
-                                        {contribution}
                                       </td>
                                     </tr>
                                   </React.Fragment>
@@ -4012,7 +4039,7 @@ export default function App() {
                           onChange={(e) => setApiKey(e.target.value)}
                           placeholder={
                             provider === "gemini" 
-                              ? "Залиште порожнім для безкоштовного вбудованого Gemini" 
+                              ? "Залиште порожнім для безкоштовного вбудованого Gemini 3.5" 
                               : provider === "groq" 
                                 ? "Введіть ключ Groq (gsk_...)" 
                                 : provider === "openrouter"
@@ -4102,9 +4129,9 @@ export default function App() {
                       >
                         {provider === "gemini" && (
                           <>
-                            <option value="">gemini-2.5-flash (Швидка та розумна, за замовчуванням)</option>
-                            <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Найдешевша, для великих обсягів)</option>
-                            <option value="gemini-3.5-flash">gemini-3.5-flash (Найпотужніша, глибокий аналіз)</option>
+                            <option value="">gemini-3.5-flash (Швидка та розумна, за замовчуванням)</option>
+                            <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Найдешевша, для великих обсягів)</option>
+                            <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Найглибший аналіз)</option>
                           </>
                         )}
                         {provider === "groq" && (
@@ -4116,15 +4143,16 @@ export default function App() {
                         )}
                         {provider === "openrouter" && (
                           <>
-                            <option value="">google/gemini-2.0-flash-exp:free (Якісний аналіз, безкоштовно)</option>
-                            <option value="meta-llama/llama-3.3-70b-instruct:free">meta-llama/llama-3.3-70b-instruct:free (Потужна, безкоштовно)</option>
+                            <option value="">meta-llama/llama-3.3-70b-instruct:free (Потужна, безкоштовно)</option>
                             <option value="qwen/qwen-2.5-72b-instruct:free">qwen/qwen-2.5-72b-instruct:free (Дуже розумна, безкоштовно)</option>
+                            <option value="openai/gpt-oss-120b:free">openai/gpt-oss-120b:free (Сильна логіка, безкоштовно)</option>
                           </>
                         )}
                         {provider === "cohere" && (
                           <>
-                            <option value="">command-r-plus (Найпотужніша для глибокого аналізу)</option>
-                            <option value="command-r">command-r (Збалансована та швидка)</option>
+                            <option value="">command-a-03-2025 (Найпотужніша, за замовчуванням)</option>
+                            <option value="command-r-08-2024">command-r-08-2024 (Збалансована та швидка)</option>
+                            <option value="command-r7b-12-2024">command-r7b-12-2024 (Найшвидша, компактна)</option>
                           </>
                         )}
                       </select>
@@ -4145,7 +4173,7 @@ export default function App() {
 
       {/* Simplified and polished professional clean footer without marketing/unrequested links */}
       <footer className="bg-white border-t border-slate-200 py-6 px-6 text-center text-xs text-slate-400">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-3">
+        <div className="max-w-[1600px] mx-auto flex flex-col sm:flex-row justify-between items-center gap-3">
           <span>&copy; {new Date().getFullYear()} LinguaForensic. Усі права захищено.</span>
           <span className="text-[10px] font-semibold text-slate-300">Сертифікований лінгвістичний аналіз</span>
         </div>

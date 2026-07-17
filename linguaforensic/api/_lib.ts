@@ -12,12 +12,12 @@ import { GoogleGenAI, Type } from "@google/genai";
 export type Provider = "gemini" | "groq" | "openrouter" | "cohere";
 
 // Real, currently-valid default models per provider (verified July 2026).
-// gemini-1.5 / 2.0 are shut down; use 2.5-flash as the safe default.
+// Gemini 2.5 now 404s for NEW API keys, so default to the Gemini 3 line.
 export const DEFAULT_MODELS: Record<Provider, string> = {
-  gemini: "gemini-2.5-flash",
+  gemini: "gemini-3.5-flash",
   groq: "llama-3.3-70b-versatile",
-  openrouter: "google/gemini-2.0-flash-exp:free",
-  cohere: "command-r-plus",
+  openrouter: "meta-llama/llama-3.3-70b-instruct:free",
+  cohere: "command-a-03-2025",
 };
 
 export const getDefaultModel = (provider: string): string =>
@@ -47,6 +47,8 @@ You analyze text by 284 linguistic features across 11 categories and 16 structur
 You output an expert assessment matching the requested mode in a structured JSON format.
 
 CRITICAL REQUIREMENT: All output strings (verdict, domain, modelGroup, keyMarkers, category names, scores, marker descriptions, changes, stopReason, qualityAssessment, comparisons title, and conclusion) MUST be strictly in UKRAINIAN language (українською мовою).
+
+SCORING SCALE (STRICT): The "score" field is the probability that the text is AI-generated, expressed as an INTEGER PERCENTAGE from 0 to 100 (NOT a 0-1 fraction). 0 = clearly human, 100 = clearly AI. For example write 80, never 0.80. Calibrate consistently: dominant AI structural markers and high TTR with low sentence-length variance => 70-95; mixed signals => 40-65; natural human variance, hedges, digressions => 5-35. Apply the SAME calibration regardless of which underlying model you are.
 
 Below is the expert methodology you MUST apply:
 1. CATEGORIES OF FEATURES:
@@ -414,6 +416,46 @@ export function parseModelJson(raw: string): any {
   return JSON.parse(cleaned);
 }
 
+/**
+ * Normalize any robotic "score" to a consistent 0-100 integer scale.
+ * Different models/providers sometimes return the score as a fraction
+ * (e.g. 0.72 meaning 72%) or already as a percent (72). This caused wildly
+ * different displayed values (0.72% vs 80%) depending on the provider.
+ */
+function normalizeScore(value: unknown): number {
+  let n = typeof value === "number" ? value : parseFloat(String(value));
+  if (!isFinite(n)) return 0;
+  if (n < 0) n = 0;
+  // A value in (0,1] almost certainly represents a fraction -> convert to %.
+  if (n > 0 && n <= 1) n = n * 100;
+  if (n > 100) n = 100;
+  return Math.round(n);
+}
+
+/**
+ * Walk a parsed result object and normalize all score-like fields in place,
+ * regardless of which mode produced it.
+ */
+export function normalizeResult(mode: number, result: any): any {
+  if (!result || typeof result !== "object") return result;
+
+  const scoreKeys = ["score", "scoreBefore", "scoreAfter"];
+  for (const k of scoreKeys) {
+    if (k in result) result[k] = normalizeScore(result[k]);
+  }
+  if (Array.isArray(result.iterations)) {
+    for (const it of result.iterations) {
+      if (it && "score" in it) it.score = normalizeScore(it.score);
+    }
+  }
+  if (Array.isArray(result.comparisons)) {
+    for (const c of result.comparisons) {
+      if (c && "score" in c) c.score = normalizeScore(c.score);
+    }
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Provider dispatch (OpenAI-compatible: Groq, OpenRouter, Cohere)
 // ---------------------------------------------------------------------------
@@ -460,7 +502,7 @@ export async function runAnalysis(params: {
     });
     const outputText = response.text;
     if (!outputText) throw new Error("Порожня відповідь від моделі Gemini API.");
-    return { ok: true, status: 200, json: parseModelJson(outputText) };
+    return { ok: true, status: 200, json: normalizeResult(mode, parseModelJson(outputText)) };
   }
 
   // ---- OpenAI-compatible providers ----
@@ -557,5 +599,5 @@ export async function runAnalysis(params: {
     choiceText = responseData.choices?.[0]?.message?.content || "";
   }
   if (!choiceText) throw new Error(`Порожня відповідь від провайдера ${provider}.`);
-  return { ok: true, status: 200, json: parseModelJson(choiceText) };
+  return { ok: true, status: 200, json: normalizeResult(mode, parseModelJson(choiceText)) };
 }

@@ -588,6 +588,36 @@ const findBackendCategory = (catKey: string, categories: { category: string; sco
 
 const memoryStore: Record<string, string> = {};
 
+// Shared keyword lists — used by BOTH the highlighter and the "can this
+// indicator highlight anything?" detector, so they never disagree.
+const KW_ENTROPY = ["в сучасному світі", "варто зазначити", "таким чином", "більше того", "важливо розуміти", "як-от", "зокрема", "слід зазначити", "важливо підкреслити", "інноваційний підхід", "варто відмітити", "з іншого боку", "перш за все", "в першу чергу", "на сьогоднішній день", "в кінцевому підсумку", "ключовий аспект", "підсумовуючи", "важливо мати на увазі", "варто звернути увагу", "не менш важливо", "на особливу увагу заслуговує", "унікальна можливість", "відіграє важливу роль", "значний внесок", "глибоке розуміння", "новий рівень"];
+const KW_HEDGES = ["можливо", "ймовірно", "мабуть", "здається", "напевно", "як відомо", "зокрема", "в принципі", "очевидно", "кажуть", "певне", "певно", "здавалося б", "скоріш за все", "швидше за все", "може бути", "у будь-якому випадку", "так би мовити", "власне кажучи", "до певної міри", "можливості", "спроби", "гіпотетично", "як припущення", "могла б", "могли б", "могло б", "мабуть-таки"];
+const KW_VALENCE = ["на сьогоднішній день", "в даному контексті", "відповідно до", "з метою покращення", "згідно з", "варто зауважити", "у зв'язку з", "звертаємо увагу", "вищезазначений", "вказаний", "діючий", "реалізація", "функціонування", "здійснення", "проведення", "належний", "відповідний", "зазначений", "даний", "у сфері", "в рамках", "на базі", "шляхом", "завдяки", "з боку", "в ході", "станом на", "в якості", "таким чином"];
+const KW_PSYCHO = ["функціонування", "забезпечення", "систематизація", "імплементація", "оптимізація", "актуальність", "ефективність", "діяльність", "трансформація", "інтеграція", "перспектива", "методологія", "концепція", "взаємодія", "парадигма", "фактор", "аспект", "процес", "явище", "структура", "координація", "моніторинг", "розробка", "інновація", "компетенція", "специфіка", "категорія", "ідентифікація", "модернізація", "стабілізація", "пріоритет"];
+const KW_MORPH = ["робить", "працює", "дозволяє", "сприяє", "забезпечує", "допомагає", "виконує", "покращує", "виявляє", "визначає", "вказує", "підтверджує", "демонструє", "аналізує", "формує", "створює", "використовує", "організовує", "активує", "впливає", "викликає", "стимулює", "підтримує", "надає", "містить", "представляє"];
+
+// Priority per indicator for the copywriter: В (high) / С (medium) / Н (low).
+const INDICATOR_PRIORITY: Record<string, "В" | "С" | "Н"> = {
+  ttr: "В",
+  entropy: "В",
+  structural: "В",
+  cvSentenceLength: "В",
+  valenceRange: "С",
+  hedgesCount: "С",
+  morphology: "С",
+  fleschEase: "С",
+  dependencyDepth: "Н",
+  lexicalDensity: "Н",
+  psycholinguistic: "С",
+  hapaxLegomena: "Н",
+};
+
+const PRIORITY_STYLES: Record<string, { bg: string; text: string; title: string }> = {
+  "В": { bg: "bg-rose-100", text: "text-rose-700", title: "Високий пріоритет — варто виправити насамперед" },
+  "С": { bg: "bg-amber-100", text: "text-amber-700", title: "Середній пріоритет" },
+  "Н": { bg: "bg-slate-100", text: "text-slate-500", title: "Низький пріоритет" },
+};
+
 const safeStorage = {
   getItem: (key: string): string | null => {
     try {
@@ -1129,12 +1159,20 @@ export default function App() {
         }
       }
 
-      if (foundEl) {
+      const container = previewContainerRef.current;
+      let style: React.CSSProperties = {};
+      if (foundEl && container) {
         foundEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         foundEl.classList.add('ring-2', 'ring-indigo-500', 'ring-offset-1', 'transition-all');
         setTimeout(() => {
           foundEl?.classList.remove('ring-2', 'ring-indigo-500', 'ring-offset-1');
         }, 2500);
+
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = foundEl.getBoundingClientRect();
+        const top = targetRect.bottom - containerRect.top + container.scrollTop + 10;
+        const left = Math.max(10, Math.min(containerRect.width - 290, targetRect.left - containerRect.left));
+        style = { position: "absolute", top: `${top}px`, left: `${left}px` };
       }
 
       setSelectedFragmentDetail({
@@ -1142,7 +1180,7 @@ export default function App() {
         quote: quote,
         desc: description,
         rec: "Рекомендація: Замініть цей вираз або структуру на менш шаблонну, розбийте речення на частини або спростіть формулювання.",
-        style: {}
+        style,
       });
     }, 150);
   };
@@ -1391,8 +1429,11 @@ export default function App() {
       morphology: 12
     };
 
-    const ALL_INDICATORS = ["fleschEase","cvSentenceLength","dependencyDepth","valenceRange","entropy","structural","ttr","lexicalDensity","hapaxLegomena","hedgesCount","psycholinguistic","morphology"];
-    const indicatorsToRender = showAllProblems ? ALL_INDICATORS : activeHighlightIndicators;
+    // In "show all problems" mode we only highlight genuinely problematic
+    // indicators (exclude hapaxLegomena — those are USEFUL unique words — and
+    // lexicalDensity, which marks normal content words and would flood the text).
+    const PROBLEM_INDICATORS = ["fleschEase","cvSentenceLength","dependencyDepth","valenceRange","entropy","structural","ttr","hedgesCount","psycholinguistic","morphology"];
+    const indicatorsToRender = showAllProblems ? PROBLEM_INDICATORS : activeHighlightIndicators;
 
     const sortedIndicators = [...indicatorsToRender].sort((a, b) => {
       return (INDICATOR_SIZE_WEIGHTS[a] || 99) - (INDICATOR_SIZE_WEIGHTS[b] || 99);
@@ -1510,7 +1551,7 @@ export default function App() {
         });
       }
       else if (indicator === "entropy" || indicator === "structural") {
-        const predictiveWords = ["в сучасному світі", "варто зазначити", "таким чином", "більше того", "важливо розуміти", "як-от", "зокрема", "слід зазначити", "важливо підкреслити", "інноваційний підхід", "варто відмітити", "з іншого боку", "перш за все", "в першу чергу", "на сьогоднішній день", "в кінцевому підсумку", "ключовий аспект", "підсумовуючи", "важливо мати на увазі", "варто звернути увагу", "не менш важливо", "на особливу увагу заслуговує", "унікальна можливість", "відіграє важливу роль", "значний внесок", "глибоке розуміння", "новий рівень"];
+        const predictiveWords = KW_ENTROPY;
         predictiveWords.forEach(word => {
           const recText = `Передбачувана лінгвістична послідовність (Ентропія): '${word}'. ШІ схильний будувати занадто логічні, передбачувані та статистично вигладжені тексти з високим показником ентропії або типових ШІ-кліше. Рекомендація: Додайте непередбачуваності, розмовних зсувів чи асиметричних фраз.`;
           const tooltipHtml = `class="bg-amber-100 border-b-2 border-amber-500 font-medium px-0.5 rounded-sm cursor-pointer hover:bg-amber-200 text-slate-900 transition-colors" data-interactive-mark="true" data-quote="${encodeURIComponent(word)}" data-type="entropy" data-label="${encodeURIComponent("Шаблонні ШІ-маркери")}" data-desc="${encodeURIComponent(`Поширене кліше '${word}'`)}" data-rec="${encodeURIComponent(recText)}"`;
@@ -1518,7 +1559,7 @@ export default function App() {
         });
       }
       else if (indicator === "hedgesCount") {
-        const hedges = ["можливо", "ймовірно", "мабуть", "здається", "напевно", "як відомо", "зокрема", "в принципі", "очевидно", "кажуть", "певне", "певно", "здавалося б", "скоріш за все", "швидше за все", "може бути", "у будь-якому випадку", "так би мовити", "власне кажучи", "до певної міри", "можливості", "спроби", "гіпотетично", "як припущення", "могла б", "могли б", "могло б", "мабуть-таки"];
+        const hedges = KW_HEDGES;
         hedges.forEach(hedge => {
           const recText = `Надмірна хеджизація (обережність): слово '${hedge}' використовується для пом'якшення тверджень. ШІ патологічно боїться безапеляційних заяв і постійно додає подібні застереження. Рекомендація: Замініть на більш пряме й упевнене формулювання або вилучіть повністю.`;
           const tooltipHtml = `class="bg-rose-100 border-b-2 border-rose-500 font-medium px-0.5 rounded-sm cursor-pointer hover:bg-rose-200 text-slate-900 transition-colors" data-interactive-mark="true" data-quote="${encodeURIComponent(hedge)}" data-type="hedges" data-label="${encodeURIComponent("Обережні слова (Хеджі)")}" data-desc="${encodeURIComponent(`Слово-хедж '${hedge}'`)}" data-rec="${encodeURIComponent(recText)}"`;
@@ -1526,7 +1567,7 @@ export default function App() {
         });
       }
       else if (indicator === "valenceRange") {
-        const flatPhrases = ["на сьогоднішній день", "в даному контексті", "відповідно до", "з метою покращення", "згідно з", "варто зауважити", "у зв'язку з", "звертаємо увагу", "вищезазначений", "вказаний", "діючий", "реалізація", "функціонування", "здійснення", "проведення", "належний", "відповідний", "зазначений", "даний", "у сфері", "в рамках", "на базі", "шляхом", "завдяки", "з боку", "в ході", "станом на", "в якості", "таким чином"];
+        const flatPhrases = KW_VALENCE;
         flatPhrases.forEach(phrase => {
           const recText = `Сухий емоційно-плоска фраза: '${phrase}' робить текст занадто канцелярським та нейтральним. У людей тексти мають амплітуду почуттів. Рекомендація: Додайте експресії, розкажіть історію або напишіть простіше, по-людськи.`;
           const tooltipHtml = `class="bg-slate-100 border-b-2 border-slate-500 font-medium px-0.5 rounded-sm cursor-pointer hover:bg-slate-200 text-slate-900 transition-colors" data-interactive-mark="true" data-quote="${encodeURIComponent(phrase)}" data-type="valence" data-label="${encodeURIComponent("Сухий канцелярський стиль")}" data-desc="${encodeURIComponent(`Емоційно абстрактна фраза '${phrase}'`)}" data-rec="${encodeURIComponent(recText)}"`;
@@ -1534,7 +1575,7 @@ export default function App() {
         });
       }
       else if (indicator === "psycholinguistic") {
-        const abstracts = ["функціонування", "забезпечення", "систематизація", "імплементація", "оптимізація", "актуальність", "ефективність", "діяльність", "трансформація", "інтеграція", "перспектива", "методологія", "концепція", "взаємодія", "парадигма", "фактор", "аспект", "процес", "явище", "структура", "координація", "моніторинг", "розробка", "інновація", "компетенція", "специфіка", "категорія", "ідентифікація", "модернізація", "стабілізація", "пріоритет"];
+        const abstracts = KW_PSYCHO;
         abstracts.forEach(word => {
           const recText = `Абстрактний психолінгвістичний опис: слово '${word}' є важким абстрактним іменником. ШІ обожнює таку лексику, оскільки вона створює ілюзію науковості. Рекомендація: Замініть дієсловом дії (замість 'забезпечення покращення' — 'покращити').`;
           const tooltipHtml = `class="bg-indigo-100 border-b-2 border-indigo-500 font-medium px-0.5 rounded-sm cursor-pointer hover:bg-indigo-200 text-slate-900 transition-colors" data-interactive-mark="true" data-quote="${encodeURIComponent(word)}" data-type="abstract" data-label="${encodeURIComponent("Важка абстракція")}" data-desc="${encodeURIComponent(`Абстрактне віддієслівне слово '${word}'`)}" data-rec="${encodeURIComponent(recText)}"`;
@@ -1542,7 +1583,7 @@ export default function App() {
         });
       }
       else if (indicator === "morphology") {
-        const verbs3rd = ["робить", "працює", "дозволяє", "сприяє", "забезпечує", "допомагає", "виконує", "покращує", "виявляє", "визначає", "вказує", "підтверджує", "демонструє", "аналізує", "формує", "створює", "використовує", "організовує", "активує", "впливає", "викликає", "стимулює", "підтримує", "надає", "містить", "представляє"];
+        const verbs3rd = KW_MORPH;
         verbs3rd.forEach(verb => {
           const recText = `Морфологічна монотонність: дієслово '${verb}' вжито у теперішньому часі 3-ї особи. ШІ схильний описувати світ як об'єкт, використовуючи лише теперішній час. Рекомендація: Уникайте цього, вживайте унікальні форми, перейдіть на першу особу ('ми зробили', 'я рекомендую') або наказовий спосіб ('покращуйте').`;
           const tooltipHtml = `class="bg-yellow-100 border-b-2 border-yellow-500 font-medium px-0.5 rounded-sm cursor-pointer hover:bg-yellow-200 text-slate-900 transition-colors" data-interactive-mark="true" data-quote="${encodeURIComponent(verb)}" data-type="morphology" data-label="${encodeURIComponent("Дієслово 3-ї особи тепер. часу")}" data-desc="${encodeURIComponent(`Типове для ШІ дієслово '${verb}'`)}" data-rec="${encodeURIComponent(recText)}"`;
@@ -1565,8 +1606,20 @@ export default function App() {
           : "bg-red-100 border-b-2 border-red-500 font-medium px-0.5 rounded-sm cursor-pointer hover:bg-red-200 text-slate-900 transition-colors";
           
         const tooltipHtml = `class="${hlClass}" data-interactive-mark="true" data-quote="${encodeURIComponent(p.quote)}" data-type="structural" data-label="${encodeURIComponent(p.marker)}" data-desc="${encodeURIComponent(p.description)}" data-rec="${encodeURIComponent("Рекомендація: Замініть цей шаблонний фрагмент або перефразуйте речення.")}"`;
-        result = replaceWordOutsideHtml(result, p.quote, (m) => `<span ${tooltipHtml}>${m}</span>`);
+        const cleanQuote = p.quote.trim().replace(/^["'«»„“]+|["'«»„“.!?,;:]+$/g, "");
+        if (cleanQuote.length > 0) {
+          result = replaceSentenceOutsideHtml(result, cleanQuote, (m) => `<span ${tooltipHtml}>${m}</span>`);
+        }
       });
+    }
+
+    // In "show all problems" mode, unify every highlight to a single problem
+    // colour (rose) so the text isn't a rainbow that's hard to read.
+    if (showAllProblems) {
+      result = result.replace(
+        /class="bg-(?:amber|purple|rose|sky|emerald|blue|slate|indigo|yellow|red)-100 border-b-2 border-(?:amber|purple|rose|sky|emerald|blue|slate|indigo|yellow|red)-500 font-medium px-0\.5 rounded-sm cursor-pointer hover:bg-(?:amber|purple|rose|sky|emerald|blue|slate|indigo|yellow|red)-200 text-slate-900 transition-colors"/g,
+        'class="bg-rose-100 border-b-2 border-rose-500 font-medium px-0.5 rounded-sm cursor-pointer hover:bg-rose-200 text-slate-900 transition-colors"'
+      );
     }
 
     return result;
@@ -1580,12 +1633,25 @@ export default function App() {
     if (!text.trim()) return set;
 
     const lower = text.toLowerCase();
+    // Boundary-accurate presence test (same rules as the highlighter).
+    const boundary = "a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ’'";
+    const hasPhrase = (phrase: string) => {
+      try {
+        const esc = phrase.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
+        const re = new RegExp(`(?:^|[^${boundary}])${esc}(?:$|[^${boundary}])`, "i");
+        return re.test(text);
+      } catch { return lower.includes(phrase); }
+    };
+    const hasAny = (arr: string[]) => arr.some(hasPhrase);
+
     const cleanWords = lower.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"'–—«»]/g, " ").split(/\s+/).filter(Boolean);
     const counts: Record<string, number> = {};
-    cleanWords.forEach(w => { if (w.length > 2) counts[w] = (counts[w] || 0) + 1; });
-
+    cleanWords.forEach(w => { if (w.length > 3) counts[w] = (counts[w] || 0) + 1; });
     if (Object.values(counts).some(c => c >= 3)) set.add("ttr");
-    if (Object.values(counts).some(c => c === 1)) set.add("hapaxLegomena");
+
+    const hapaxCounts: Record<string, number> = {};
+    cleanWords.forEach(w => { if (w.length > 2) hapaxCounts[w] = (hapaxCounts[w] || 0) + 1; });
+    if (Object.values(hapaxCounts).some(c => c === 1)) set.add("hapaxLegomena");
 
     const sentences = text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
     const lens = sentences.map(s => s.split(/\s+/).length);
@@ -1596,12 +1662,15 @@ export default function App() {
     if (lens.some(l => l >= 22)) set.add("fleschEase");
     if (lens.some(l => l > 2 && l < 7)) set.add("dependencyDepth");
 
-    const has = (arr: string[]) => arr.some(p => lower.includes(p));
-    if (has(["в сучасному світі","варто зазначити","таким чином","більше того","важливо розуміти","зокрема","слід зазначити","важливо підкреслити","перш за все","в першу чергу","підсумовуючи"])) { set.add("entropy"); set.add("structural"); }
-    if (has(["можливо","ймовірно","мабуть","здається","напевно","очевидно","певне","певно"])) set.add("hedgesCount");
-    if (has(["на сьогоднішній день","відповідно до","згідно з","у зв'язку з","в рамках","шляхом","завдяки","в ході","в якості","таким чином"])) set.add("valenceRange");
-    if (has(["функціонування","забезпечення","оптимізація","ефективність","діяльність","інтеграція","концепція","процес","явище","структура","розробка"])) set.add("psycholinguistic");
-    if (has(["робить","працює","дозволяє","сприяє","забезпечує","допомагає","виконує","покращує","визначає","створює","використовує","містить","надає"])) set.add("morphology");
+    // Lexical density: any content word > 3 chars that isn't functional.
+    const functional = new Set(["і","та","й","в","у","на","з","із","за","до","для","про","як","що","але","це","він","вона","воно","вони","ми","ви","ти","який","яка","яке","які","його","її","їх","тому","при","від","під","над","перед","через","між","біля","по","проти","серед","якщо","щоб","також","дуже"]);
+    if (cleanWords.some(w => w.length > 3 && !functional.has(w))) set.add("lexicalDensity");
+
+    if (hasAny(KW_ENTROPY)) { set.add("entropy"); set.add("structural"); }
+    if (hasAny(KW_HEDGES)) set.add("hedgesCount");
+    if (hasAny(KW_VALENCE)) set.add("valenceRange");
+    if (hasAny(KW_PSYCHO)) set.add("psycholinguistic");
+    if (hasAny(KW_MORPH)) set.add("morphology");
 
     if (mode2Result && mode2Result.structuralPatterns && mode2Result.structuralPatterns.length > 0) set.add("structural");
 
@@ -1727,7 +1796,8 @@ export default function App() {
         displayValue,
         normalRange: cat.normalRange,
         score,
-        contribution
+        contribution,
+        priority: INDICATOR_PRIORITY[cat.indicatorKey] || "С"
       };
     });
 
@@ -2167,6 +2237,7 @@ export default function App() {
                       </div>
                       <div style="display: flex; flex-direction: column; min-width: 0;">
                         <div style="display: flex; align-items: center; gap: 4px;">
+                          <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:4px;font-size:9px;font-weight:800;${cat.priority === 'В' ? 'background:#ffe4e6;color:#be123c;' : cat.priority === 'С' ? 'background:#fef3c7;color:#b45309;' : 'background:#f1f5f9;color:#64748b;'}" title="${cat.priority === 'В' ? 'Високий пріоритет' : cat.priority === 'С' ? 'Середній пріоритет' : 'Низький пріоритет'}">${cat.priority}</span>
                           <span style="font-weight: 700; color: #1e293b; font-size: 12px;">${cat.label}</span>
                           <button class="info-btn" onclick="event.stopPropagation(); showInfoModal('${cat.key}')" title="Довідка">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
@@ -2574,7 +2645,10 @@ export default function App() {
       else if (selectedQuote) {
         const recText = "Цей фрагмент відповідає виявленому структурному маркеру генерації. Рекомендація: перепишіть його природнішою мовою.";
         const attrs = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="Структурний ШІ-маркер" data-desc="Виявлений шаблонний фрагмент" data-rec="' + encodeURIComponent(recText) + '"';
-        result = replacePhraseSafe(result, selectedQuote, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
+        var cleanQuote = selectedQuote.trim().replace(/^["'«»„“]+|["'«»„“.!?,;:]+$/g, "");
+        if (cleanQuote.length > 0) {
+          result = replacePhraseSafe(result, cleanQuote, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
+        }
       }
       container.innerHTML = result;
     }
@@ -3567,7 +3641,7 @@ export default function App() {
                 <motion.div
                   initial={{ opacity: 0, scale: 0.98 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden flex flex-col max-h-[800px] overflow-y-auto"
+                  className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden flex flex-col"
                 >
                   <div className={`p-5 flex flex-col gap-3.5 ${getScoreColors(mode2Result.score).bg} border-b border-slate-100`}>
                     <div className="flex justify-between items-start">
@@ -3613,10 +3687,35 @@ export default function App() {
                       <p className="text-slate-600 leading-relaxed font-medium">{mode2Result.verdict}</p>
                     </div>
 
+                    {/* Detailed final summary (moved up, right under verdict) */}
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Детальний висновок лінгвіста</span>
+                      <p className="text-slate-600 leading-relaxed bg-slate-50 border border-slate-200 p-3.5 rounded-xl whitespace-pre-line">
+                        {mode2Result.conclusion}
+                      </p>
+                    </div>
+
+                    {/* Model group binding (moved up) */}
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Особливості сімейства моделей</span>
+                      <div className="bg-indigo-50/30 border border-indigo-100 rounded-xl p-3 space-y-1 text-slate-700">
+                        <span className="font-bold block text-indigo-900">Прив'язка до архітектури: {mode2Result.modelGroup}</span>
+                        <p className="leading-relaxed text-slate-600">{mode2Result.modelGroupReasoning}</p>
+                      </div>
+                    </div>
+
                     <div className="space-y-3">
                       <div className="flex justify-between items-center">
                         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Розподіл ознак по 12 категоріях лінгвістичного аналізу</span>
-                        <span className="text-[9px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-bold uppercase tracking-wider">клікніть рядок для підсвітки</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[9px] text-slate-400 flex items-center gap-1">
+                            <span className="w-3.5 h-3.5 rounded bg-rose-100 text-rose-700 font-black flex items-center justify-center">В</span>
+                            <span className="w-3.5 h-3.5 rounded bg-amber-100 text-amber-700 font-black flex items-center justify-center">С</span>
+                            <span className="w-3.5 h-3.5 rounded bg-slate-100 text-slate-500 font-black flex items-center justify-center">Н</span>
+                            <span>пріоритет</span>
+                          </span>
+                          <span className="text-[9px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-bold uppercase tracking-wider">клікніть рядок</span>
+                        </div>
                       </div>
 
                       <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-3xs">
@@ -3715,6 +3814,15 @@ export default function App() {
 
                                           <div className="flex flex-col min-w-0">
                                             <div className="flex items-center gap-1.5 min-w-0">
+                                              {(() => {
+                                                const prio = INDICATOR_PRIORITY[cat.indicatorKey] || "С";
+                                                const st = PRIORITY_STYLES[prio];
+                                                return (
+                                                  <span className={`shrink-0 w-4 h-4 rounded flex items-center justify-center text-[9px] font-black ${st.bg} ${st.text}`} title={st.title}>
+                                                    {prio}
+                                                  </span>
+                                                );
+                                              })()}
                                               <span className="font-bold text-slate-700 text-xs truncate">{cat.label}</span>
                                               <button
                                                 onClick={(e) => {
@@ -3753,7 +3861,7 @@ export default function App() {
 
                     {/* Structural patterns list (clickable to highlight text fragment) */}
                     <div className="space-y-2">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Виявлені кліше та структурні ШІ-маркери (Клікніть для підсвічування)</span>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Виявлені кліше та структурні ШІ-маркери (потрібно виправити)</span>
                       <div className="flex flex-col gap-2">
                         {mode2Result.structuralPatterns.map((pat, pIdx) => {
                           const isSelected = selectedQuote && selectedQuote.toLowerCase() === pat.quote.toLowerCase();
@@ -3782,23 +3890,6 @@ export default function App() {
                           );
                         })}
                       </div>
-                    </div>
-
-                    {/* Model group binding */}
-                    <div className="space-y-1.5">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Особливості сімейства моделей</span>
-                      <div className="bg-indigo-50/30 border border-indigo-100 rounded-xl p-3 space-y-1 text-slate-700">
-                        <span className="font-bold block text-indigo-900">Прив'язка до архітектури: {mode2Result.modelGroup}</span>
-                        <p className="leading-relaxed text-slate-600">{mode2Result.modelGroupReasoning}</p>
-                      </div>
-                    </div>
-
-                    {/* Detailed final summary */}
-                    <div className="space-y-1.5">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Детальний висновок лінгвіста</span>
-                      <p className="text-slate-600 leading-relaxed bg-slate-50 border border-slate-200 p-3.5 rounded-xl whitespace-pre-line">
-                        {mode2Result.conclusion}
-                      </p>
                     </div>
 
                     {/* AI Overview / GEO readiness */}

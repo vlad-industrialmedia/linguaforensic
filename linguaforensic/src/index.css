@@ -1,0 +1,18 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Вложенні інтерактивні маркери (слово належить до кількох категорій одночасно) */
+[data-interactive-mark="true"] [data-interactive-mark="true"] {
+  font-weight: 800 !important;
+  border-bottom-width: 4px !important;
+}
+[data-interactive-mark="true"] [data-interactive-mark="true"] [data-interactive-mark="true"] {
+  font-weight: 900 !important;
+  border-bottom-width: 5px !important;
+}

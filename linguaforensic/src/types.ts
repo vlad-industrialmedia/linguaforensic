@@ -41,6 +41,10 @@ export interface Mode2Result {
   structuralPatterns: StructuralPattern[];
   modelGroupReasoning: string;
   conclusion: string;
+  aiOverviewScore?: number;
+  aiOverviewVerdict?: string;
+  aiOverviewTips?: string[];
+  suggestedTldr?: string;
 }
 
 export interface Mode3Result {

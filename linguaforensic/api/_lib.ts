@@ -179,6 +179,14 @@ export const Mode2Schema = {
     },
     modelGroupReasoning: { type: Type.STRING },
     conclusion: { type: Type.STRING },
+    aiOverviewScore: { type: Type.NUMBER, description: "Наскільки текст придатний для цитування нейромережами (AI Overview), 0-100" },
+    aiOverviewVerdict: { type: Type.STRING, description: "Короткий вердикт щодо придатності тексту для цитування ШІ (українською)" },
+    aiOverviewTips: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "2-4 конкретні поради, як покращити текст для цитування нейромережами (українською)",
+    },
+    suggestedTldr: { type: Type.STRING, description: "Готовий короткий TL;DR (2-3 речення) цього тексту, придатний для цитування ШІ (українською)" },
   },
   required: ["score", "confidenceInterval", "domain", "verdict", "modelGroup", "categories", "indicators", "structuralPatterns", "modelGroupReasoning", "conclusion"],
 };
@@ -315,6 +323,7 @@ export function buildPrompt(
       Виконайте Режим 2 (Повна детекція з деталями) для наступного тексту.
       Проведіть детальний розрахунок за всіма 12 категоріями оцінок (включаючи вагу за доменом та внесок у загальну оцінку), розрахуйте всі ключові числові індикатори (TTR, щільність, гапакс, ентропія, CV, дерево залежностей, число хеджів, Flesch Reading Ease, діапазон валентності) та виявіть структурні патерни з конкретними цитатами.
       Дайте обґрунтування групи моделі та детальний розгорнутий висновок.
+      ДОДАТКОВО оцініть придатність тексту для цитування нейромережами (AI Overview / GEO): заповніть aiOverviewScore (0-100), aiOverviewVerdict (короткий вердикт), aiOverviewTips (2-4 поради: чіткість відповіді на початку блоку, наявність фактів/визначень, структура під сніпет, унікальність) та suggestedTldr (готовий стислий TL;DR на 2-3 речення, який ШІ міг би процитувати). Усе — українською.
       Поверніть строго JSON відповідно до схеми Mode2Schema.
       ${optimizationNotice}
 
@@ -413,7 +422,52 @@ export function parseModelJson(raw: string): any {
   if (cleaned.startsWith("```")) {
     cleaned = cleaned.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/i, "").trim();
   }
-  return JSON.parse(cleaned);
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Some models add stray text before/after the JSON object.
+    // Fall back to extracting the outermost {...} block.
+    const first = cleaned.indexOf("{");
+    const last = cleaned.lastIndexOf("}");
+    if (first !== -1 && last !== -1 && last > first) {
+      const candidate = cleaned.slice(first, last + 1);
+      return JSON.parse(candidate);
+    }
+    throw new Error("Модель повернула невалідний JSON.");
+  }
+}
+
+const toNum = (v: string | null): number | null => {
+  if (v == null) return null;
+  const n = parseInt(v, 10);
+  return isFinite(n) ? n : null;
+};
+
+/** Extract rate-limit info from provider response headers (best-effort). */
+export function extractRateLimit(provider: string, headers: Headers): RateLimitInfo | null {
+  try {
+    if (provider === "groq") {
+      return {
+        provider,
+        requestsRemaining: toNum(headers.get("x-ratelimit-remaining-requests")),
+        requestsLimit: toNum(headers.get("x-ratelimit-limit-requests")),
+        tokensRemaining: toNum(headers.get("x-ratelimit-remaining-tokens")),
+        resetText: headers.get("x-ratelimit-reset-requests"),
+      };
+    }
+    if (provider === "openrouter") {
+      return {
+        provider,
+        requestsRemaining: toNum(headers.get("x-ratelimit-remaining")),
+        requestsLimit: toNum(headers.get("x-ratelimit-limit")),
+        tokensRemaining: null,
+        resetText: headers.get("x-ratelimit-reset"),
+      };
+    }
+  } catch {
+    /* noop */
+  }
+  return null;
 }
 
 /**
@@ -460,12 +514,21 @@ export function normalizeResult(mode: number, result: any): any {
 // Provider dispatch (OpenAI-compatible: Groq, OpenRouter, Cohere)
 // ---------------------------------------------------------------------------
 
+export interface RateLimitInfo {
+  provider: string;
+  requestsRemaining?: number | null;
+  requestsLimit?: number | null;
+  tokensRemaining?: number | null;
+  resetText?: string | null;
+}
+
 export interface DispatchResult {
   ok: boolean;
   status: number;
   json?: any;
   errorCode?: "API_LIMIT_REACHED";
   message?: string;
+  rateLimit?: RateLimitInfo | null;
 }
 
 export async function runAnalysis(params: {
@@ -563,11 +626,27 @@ export async function runAnalysis(params: {
     return { ok: false, status: 400, message: `Невідомий провайдер: ${provider}.` };
   }
 
-  const apiResponse = await fetch(endpoint, {
+  let apiResponse = await fetch(endpoint, {
     method: "POST",
     headers,
     body: JSON.stringify(requestBody),
   });
+
+  // Some models on Groq/OpenRouter reject strict json_object mode with a 400
+  // "Failed to validate JSON". Retry once WITHOUT response_format; our tolerant
+  // parser then extracts the JSON from the plain-text answer.
+  if (!apiResponse.ok && apiResponse.status === 400 && requestBody.response_format) {
+    const errPeek = (await apiResponse.clone().text().catch(() => "")).toLowerCase();
+    if (errPeek.includes("json") || errPeek.includes("validate") || errPeek.includes("response_format")) {
+      const retryBody = { ...requestBody };
+      delete retryBody.response_format;
+      apiResponse = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(retryBody),
+      });
+    }
+  }
 
   if (!apiResponse.ok) {
     const errorText = await apiResponse.text().catch(() => "");
@@ -592,6 +671,7 @@ export async function runAnalysis(params: {
   }
 
   const responseData = await apiResponse.json();
+  const rateLimit = extractRateLimit(provider, apiResponse.headers);
   let choiceText = "";
   if (provider === "cohere") {
     choiceText = responseData.message?.content?.[0]?.text || responseData.text || "";
@@ -599,5 +679,5 @@ export async function runAnalysis(params: {
     choiceText = responseData.choices?.[0]?.message?.content || "";
   }
   if (!choiceText) throw new Error(`Порожня відповідь від провайдера ${provider}.`);
-  return { ok: true, status: 200, json: normalizeResult(mode, parseModelJson(choiceText)) };
+  return { ok: true, status: 200, json: normalizeResult(mode, parseModelJson(choiceText)), rateLimit };
 }

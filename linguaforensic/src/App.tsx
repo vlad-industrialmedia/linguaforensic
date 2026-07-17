@@ -38,6 +38,7 @@ import {
   Key,
   Eye,
   EyeOff,
+  MoveVertical,
   Pencil,
   AlertTriangle,
   Cpu,
@@ -865,6 +866,8 @@ export default function App() {
   const [activeExplainingCategory, setActiveExplainingCategory] = useState<string | null>(null);
   const [activeIterationIndex, setActiveIterationIndex] = useState<number>(0);
   const [selectedQuote, setSelectedQuote] = useState<string | null>(null);
+  const [previewHeight, setPreviewHeight] = useState<number>(350);
+  const [showAllProblems, setShowAllProblems] = useState<boolean>(false);
 
   const editorRef = useRef<HTMLDivElement>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
@@ -892,6 +895,7 @@ export default function App() {
     return safeStorage.getItem("lf_custom_model") || "";
   });
   const [showSettings, setShowSettings] = useState(false);
+  const [rateLimitInfo, setRateLimitInfo] = useState<{ provider: string; requestsRemaining?: number | null; requestsLimit?: number | null; tokensRemaining?: number | null; resetText?: string | null } | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
   const [showToolsDropdown, setShowToolsDropdown] = useState(false);
 
@@ -986,6 +990,20 @@ export default function App() {
   }, []);
 
   // Dynamic high-fidelity time estimation helper
+  // Rough token cost estimate: input text + prompt overhead + expected output.
+  const estimateTokens = () => {
+    const textLen = activeTab === 5
+      ? textsToCompare.reduce((s, t) => s + (t?.length || 0), 0)
+      : inputText.length;
+    const inputTokens = Math.ceil(textLen / 3); // ~3 chars/token for uk/ru
+    const promptOverhead = 1200; // system instruction + schema
+    const outputByMode: Record<number, number> = { 1: 300, 2: 1500, 3: Math.ceil(inputTokens * 1.2) + 400, 4: Math.ceil(inputTokens * 1.5) + 800, 5: 1200 };
+    const output = outputByMode[activeTab] || 800;
+    const total = inputTokens + promptOverhead + output;
+    if (total >= 1000) return (total / 1000).toFixed(1) + "k";
+    return String(total);
+  };
+
   const getEstimatedDuration = () => {
     const textLen = inputText.length;
     const isGroq = provider === "groq";
@@ -1230,6 +1248,10 @@ export default function App() {
 
       const data = await response.json();
 
+      if (data && data._rateLimit) {
+        setRateLimitInfo(data._rateLimit);
+      }
+
       if (activeTab === 1) setMode1Result(data);
       else if (activeTab === 2) setMode2Result(data);
       else if (activeTab === 3) setMode3Result(data);
@@ -1369,7 +1391,10 @@ export default function App() {
       morphology: 12
     };
 
-    const sortedIndicators = [...activeHighlightIndicators].sort((a, b) => {
+    const ALL_INDICATORS = ["fleschEase","cvSentenceLength","dependencyDepth","valenceRange","entropy","structural","ttr","lexicalDensity","hapaxLegomena","hedgesCount","psycholinguistic","morphology"];
+    const indicatorsToRender = showAllProblems ? ALL_INDICATORS : activeHighlightIndicators;
+
+    const sortedIndicators = [...indicatorsToRender].sort((a, b) => {
       return (INDICATOR_SIZE_WEIGHTS[a] || 99) - (INDICATOR_SIZE_WEIGHTS[b] || 99);
     });
 
@@ -1526,11 +1551,15 @@ export default function App() {
       }
     });
 
-    // 2. Highlighting general structural patterns returned from backend Mode 2
+    // 2. Highlighting general structural patterns returned from backend Mode 2.
+    // Only show these when the user explicitly enables "show all problems" (eye
+    // toggle) or has selected a specific pattern — otherwise the preview starts
+    // clean and highlights appear only for the chosen category/pattern.
     if (mode2Result && mode2Result.structuralPatterns) {
       mode2Result.structuralPatterns.forEach((p) => {
         const isSelected = selectedQuote && selectedQuote.toLowerCase() === p.quote.toLowerCase();
-        
+        if (!showAllProblems && !isSelected) return;
+
         const hlClass = isSelected
           ? "bg-amber-300 border-b-2 border-amber-600 font-extrabold px-1 py-0.5 rounded-md cursor-pointer text-slate-950 shadow-md ring-2 ring-amber-400 scale-[1.02] inline-block transition-all duration-300 animate-pulse"
           : "bg-red-100 border-b-2 border-red-500 font-medium px-0.5 rounded-sm cursor-pointer hover:bg-red-200 text-slate-900 transition-colors";
@@ -1542,6 +1571,44 @@ export default function App() {
 
     return result;
   };
+
+  // Determine which indicators would actually highlight something for the
+  // current text. Used to disable toggles that can't produce any highlight.
+  const getHighlightableIndicators = React.useMemo(() => {
+    const text = inputText || "";
+    const set = new Set<string>();
+    if (!text.trim()) return set;
+
+    const lower = text.toLowerCase();
+    const cleanWords = lower.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"'–—«»]/g, " ").split(/\s+/).filter(Boolean);
+    const counts: Record<string, number> = {};
+    cleanWords.forEach(w => { if (w.length > 2) counts[w] = (counts[w] || 0) + 1; });
+
+    if (Object.values(counts).some(c => c >= 3)) set.add("ttr");
+    if (Object.values(counts).some(c => c === 1)) set.add("hapaxLegomena");
+
+    const sentences = text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+    const lens = sentences.map(s => s.split(/\s+/).length);
+    for (let i = 0; i < lens.length; i++) {
+      if (lens[i] < 6) continue;
+      if ((i > 0 && Math.abs(lens[i] - lens[i - 1]) <= 2) || (i < lens.length - 1 && Math.abs(lens[i] - lens[i + 1]) <= 2)) { set.add("cvSentenceLength"); break; }
+    }
+    if (lens.some(l => l >= 22)) set.add("fleschEase");
+    if (lens.some(l => l > 2 && l < 7)) set.add("dependencyDepth");
+
+    const has = (arr: string[]) => arr.some(p => lower.includes(p));
+    if (has(["в сучасному світі","варто зазначити","таким чином","більше того","важливо розуміти","зокрема","слід зазначити","важливо підкреслити","перш за все","в першу чергу","підсумовуючи"])) { set.add("entropy"); set.add("structural"); }
+    if (has(["можливо","ймовірно","мабуть","здається","напевно","очевидно","певне","певно"])) set.add("hedgesCount");
+    if (has(["на сьогоднішній день","відповідно до","згідно з","у зв'язку з","в рамках","шляхом","завдяки","в ході","в якості","таким чином"])) set.add("valenceRange");
+    if (has(["функціонування","забезпечення","оптимізація","ефективність","діяльність","інтеграція","концепція","процес","явище","структура","розробка"])) set.add("psycholinguistic");
+    if (has(["робить","працює","дозволяє","сприяє","забезпечує","допомагає","виконує","покращує","визначає","створює","використовує","містить","надає"])) set.add("morphology");
+
+    if (mode2Result && mode2Result.structuralPatterns && mode2Result.structuralPatterns.length > 0) set.add("structural");
+
+    return set;
+  }, [inputText, mode2Result]);
+
+  const canHighlightIndicator = (indicatorKey: string) => getHighlightableIndicators.has(indicatorKey);
 
   React.useEffect(() => {
     (window as any).dispatchMarkClick = (quote: string) => {
@@ -1942,11 +2009,13 @@ export default function App() {
       background-color: #fafafa;
       font-size: 13px;
       line-height: 1.7;
-      min-height: 250px;
-      max-height: 500px;
+      height: 400px;
+      min-height: 150px;
+      max-height: 85vh;
       overflow-y: auto;
       white-space: pre-wrap;
       position: relative;
+      resize: vertical;
     }
     .hl-span {
       border-bottom: 2px solid transparent;
@@ -2132,9 +2201,33 @@ export default function App() {
             `).join("")}
           </div>
         ` : ""}
-      </div>
 
-      <!-- Right side: document preview with interactive markers -->
+        ${mode2Result && (mode2Result.aiOverviewVerdict || mode2Result.suggestedTldr) ? `
+          <div class="panel-title" style="margin-top: 16px;">Придатність для цитування нейромережами (AI Overview / GEO)</div>
+          <div style="border: 1px solid #ddd6fe; background-color: #f5f3ff; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+            ${typeof mode2Result.aiOverviewScore === "number" ? `
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <div style="flex: 1; height: 8px; background-color: #ede9fe; border-radius: 999px; overflow: hidden;">
+                  <div style="height: 100%; width: ${Math.max(0, Math.min(100, mode2Result.aiOverviewScore))}%; background-color: #8b5cf6; border-radius: 999px;"></div>
+                </div>
+                <span style="font-size: 12px; font-weight: 800; color: #5b21b6;">${mode2Result.aiOverviewScore}/100</span>
+              </div>` : ""}
+            ${mode2Result.aiOverviewVerdict ? `<p style="font-size: 12px; color: #334155; line-height: 1.6; margin: 0; font-weight: 500;">${mode2Result.aiOverviewVerdict}</p>` : ""}
+            ${mode2Result.aiOverviewTips && mode2Result.aiOverviewTips.length > 0 ? `
+              <div>
+                <div style="font-size: 10px; font-weight: 700; color: #6d28d9; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;">Як покращити для цитування ШІ:</div>
+                <ul style="margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px;">
+                  ${mode2Result.aiOverviewTips.map(tip => `<li style="font-size: 11px; color: #475569; line-height: 1.5;">${tip}</li>`).join("")}
+                </ul>
+              </div>` : ""}
+            ${mode2Result.suggestedTldr ? `
+              <div style="background-color: #ffffff; border: 1px solid #ddd6fe; border-radius: 8px; padding: 12px;">
+                <div style="font-size: 10px; font-weight: 800; color: #6d28d9; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;">Готовий TL;DR для ШІ</div>
+                <p style="font-size: 11px; color: #334155; line-height: 1.6; margin: 0; font-style: italic;">${mode2Result.suggestedTldr}</p>
+              </div>` : ""}
+          </div>
+        ` : ""}
+      </div>
       <div class="panel sticky-panel">
         <div class="panel-title">
           Інтерактивний перегляд тексту
@@ -2344,6 +2437,30 @@ export default function App() {
         return string.replace(/[-\\/\\\\^$*+?.()|[\\\\\]{}]/g, "\\\\$&");
       }
 
+      // Cyrillic-aware word replace that skips content inside HTML tags.
+      // \\b does NOT work for Cyrillic in JS, so we use explicit boundaries.
+      function replaceWordSafe(html, word, buildSpan) {
+        const esc = escapeRegex(word);
+        const boundary = "a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ0-9’'";
+        const re = new RegExp("(<[^>]+>)|((?:^|(?<![" + boundary + "]))" + esc + "(?![" + boundary + "]))", "gi");
+        return html.replace(re, function(match, tag, wordMatch) {
+          if (tag) return tag;
+          if (!wordMatch) return match;
+          return buildSpan(wordMatch);
+        });
+      }
+
+      // Phrase/sentence replace that skips content inside HTML tags.
+      function replacePhraseSafe(html, phrase, buildSpan) {
+        const esc = escapeRegex(phrase);
+        const re = new RegExp("(<[^>]+>)|(" + esc + ")", "gi");
+        return html.replace(re, function(match, tag, phraseMatch) {
+          if (tag) return tag;
+          if (!phraseMatch) return match;
+          return buildSpan(phraseMatch);
+        });
+      }
+
       if (activeHighlightIndicator) {
         if (activeHighlightIndicator === "ttr") {
           const words = inputText.split(/\\s+/);
@@ -2355,11 +2472,9 @@ export default function App() {
           Object.keys(counts).forEach(word => {
             const count = counts[word];
             if (count >= 3) {
-              const escapedWord = escapeRegex(word);
-              const regex = new RegExp('\\\\b(' + escapedWord + ')\\\\b', "gi");
-              const recText = "Лексичний повтор слова '" + word + "'. Рекомендація: Використовуйте синоніми для підвищення унікальності та різноманітності лексики.";
-              const tooltipHtml = 'class="hl-span hl-ttr" data-interactive-mark="true" data-quote="' + encodeURIComponent(word) + '" data-label="Лексичний повтор" data-desc="Слово \\'' + word + '\\' вжито ' + count + ' разів" data-rec="' + encodeURIComponent(recText) + '"';
-              result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+              const recText = "Лексичний повтор слова '" + word + "'. Рекомендація: використовуйте синоніми для підвищення унікальності та різноманітності лексики.";
+              const attrs = 'class="hl-span hl-ttr" data-interactive-mark="true" data-label="Лексичний повтор" data-desc="Слово \\'' + word + '\\' вжито ' + count + ' разів" data-rec="' + encodeURIComponent(recText) + '"';
+              result = replaceWordSafe(result, word, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
             }
           });
         }
@@ -2368,26 +2483,15 @@ export default function App() {
           sentences.forEach((sentence, sIdx) => {
             if (sentence.trim().length < 15) return;
             const wordsCount = sentence.trim().split(/\\s+/).length;
-            
-            let hasSimilarNeighbor = false;
-            const prevSentence = sentences[sIdx - 1];
-            const nextSentence = sentences[sIdx + 1];
-            
-            if (prevSentence) {
-              const prevCount = prevSentence.trim().split(/\\s+/).length;
-              if (Math.abs(wordsCount - prevCount) <= 2) hasSimilarNeighbor = true;
-            }
-            if (nextSentence) {
-              const nextCount = nextSentence.trim().split(/\\s+/).length;
-              if (Math.abs(wordsCount - nextCount) <= 2) hasSimilarNeighbor = true;
-            }
-
-            if (hasSimilarNeighbor && wordsCount >= 6) {
-              const escapedSentence = escapeRegex(sentence.trim());
-              const regex = new RegExp('(' + escapedSentence + ')', "g");
-              const recText = "Монотонний синтаксичний ритм: речення складається з " + wordsCount + " слів, що майже дорівнює довжині сусідніх фраз. Рекомендація: Чергуйте довгі речення з короткими.";
-              const tooltipHtml = 'class="hl-span hl-cv" data-interactive-mark="true" data-quote="' + encodeURIComponent(sentence.slice(0, 30)) + '..." data-label="Монотонний ритм" data-desc="Речення з ' + wordsCount + ' слів має майже таку ж довжину, як сусідні" data-rec="' + encodeURIComponent(recText) + '"';
-              result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+            let similar = false;
+            const prev = sentences[sIdx - 1];
+            const next = sentences[sIdx + 1];
+            if (prev && Math.abs(wordsCount - prev.trim().split(/\\s+/).length) <= 2) similar = true;
+            if (next && Math.abs(wordsCount - next.trim().split(/\\s+/).length) <= 2) similar = true;
+            if (similar && wordsCount >= 6) {
+              const recText = "Монотонний синтаксичний ритм: речення складається з " + wordsCount + " слів, що майже дорівнює довжині сусідніх фраз. Рекомендація: чергуйте довгі речення з короткими.";
+              const attrs = 'class="hl-span hl-cv" data-interactive-mark="true" data-label="Монотонний ритм" data-desc="Речення з ' + wordsCount + ' слів має майже таку ж довжину, як сусідні" data-rec="' + encodeURIComponent(recText) + '"';
+              result = replacePhraseSafe(result, sentence.trim(), function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
             }
           });
         }
@@ -2397,11 +2501,9 @@ export default function App() {
             if (sentence.trim().length < 25) return;
             const wordsCount = sentence.trim().split(/\\s+/).length;
             if (wordsCount >= 22) {
-              const escapedSentence = escapeRegex(sentence.trim());
-              const regex = new RegExp('(' + escapedSentence + ')', "g");
-              const recText = "Надмірно складне речення для сприйняття: містить " + wordsCount + " слів. Рекомендація: Розбийте це речення на кілька коротших для покращення сприйняття.";
-              const tooltipHtml = 'class="hl-span hl-flesch" data-interactive-mark="true" data-quote="' + encodeURIComponent(sentence.slice(0, 30)) + '..." data-label="Важке для читання речення" data-desc="Речення містить ' + wordsCount + ' слів" data-rec="' + encodeURIComponent(recText) + '"';
-              result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+              const recText = "Надмірно складне речення для сприйняття: містить " + wordsCount + " слів. Рекомендація: розбийте це речення на кілька коротших.";
+              const attrs = 'class="hl-span hl-flesch" data-interactive-mark="true" data-label="Важке для читання речення" data-desc="Речення містить ' + wordsCount + ' слів" data-rec="' + encodeURIComponent(recText) + '"';
+              result = replacePhraseSafe(result, sentence.trim(), function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
             }
           });
         }
@@ -2411,11 +2513,9 @@ export default function App() {
             if (sentence.trim().length < 5) return;
             const wordsCount = sentence.trim().split(/\\s+/).length;
             if (wordsCount > 2 && wordsCount < 7) {
-              const escapedSentence = escapeRegex(sentence.trim());
-              const regex = new RegExp('(' + escapedSentence + ')', "g");
-              const recText = "Дуже спрощена синтаксична структура: речення занадто просте і містить лише " + wordsCount + " слів. Рекомендація: Спробуйте об'єднати це речення з сусідніми або розширити його.";
-              const tooltipHtml = 'class="hl-span hl-depth" data-interactive-mark="true" data-quote="' + encodeURIComponent(sentence.slice(0, 30)) + '..." data-label="Спрощена синтаксична структура" data-desc="Просте речення з ' + wordsCount + ' слів" data-rec="' + encodeURIComponent(recText) + '"';
-              result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+              const recText = "Дуже спрощена синтаксична структура: речення занадто просте і містить лише " + wordsCount + " слів. Рекомендація: об'єднайте його з сусіднім або розширте.";
+              const attrs = 'class="hl-span hl-depth" data-interactive-mark="true" data-label="Спрощена синтаксична структура" data-desc="Просте речення з ' + wordsCount + ' слів" data-rec="' + encodeURIComponent(recText) + '"';
+              result = replacePhraseSafe(result, sentence.trim(), function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
             }
           });
         }
@@ -2426,10 +2526,9 @@ export default function App() {
             const clean = raw.toLowerCase().replace(/[.,\\/#!$%\\^&\\*;:{}=\\-_\\~()?"'–—«»]/g, "").trim();
             if (clean.length > 3 && !functional.has(clean) && !seen.has(clean)) {
               seen.add(clean);
-              const regex = new RegExp('\\\\b(' + escapeRegex(clean) + ')\\\\b', "gi");
               const recText = "Повнозначне слово '" + clean + "'. Висока лексична щільність характерна для сухого ШІ-стилю. Рекомендація: розбавляйте службовими словами та займенниками.";
-              const tooltipHtml = 'class="hl-span hl-lexical" data-interactive-mark="true" data-label="Лексична щільність" data-desc="Значуще слово \\'' + clean + '\\'" data-rec="' + encodeURIComponent(recText) + '"';
-              result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+              const attrs = 'class="hl-span hl-lexical" data-interactive-mark="true" data-label="Лексична щільність" data-desc="Значуще слово \\'' + clean + '\\'" data-rec="' + encodeURIComponent(recText) + '"';
+              result = replaceWordSafe(result, clean, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
             }
           });
         }
@@ -2441,37 +2540,41 @@ export default function App() {
           Object.keys(counts).forEach(word => {
             if (counts[word] === 1 && !seen.has(word)) {
               seen.add(word);
-              const regex = new RegExp('\\\\b(' + escapeRegex(word) + ')\\\\b', "gi");
               const recText = "Унікальне слово '" + word + "' (hapax). Багато унікальних слів — ознака живого тексту; зберігайте таке різноманіття.";
-              const tooltipHtml = 'class="hl-span hl-hapax" data-interactive-mark="true" data-label="Унікальне слово" data-desc="Слово \\'' + word + '\\' вжите один раз" data-rec="' + encodeURIComponent(recText) + '"';
-              result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+              const attrs = 'class="hl-span hl-hapax" data-interactive-mark="true" data-label="Унікальне слово" data-desc="Слово \\'' + word + '\\' вжите один раз" data-rec="' + encodeURIComponent(recText) + '"';
+              result = replaceWordSafe(result, word, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
             }
           });
         }
         else if (activeHighlightIndicator === "hedgesCount") {
           const hedges = ["можливо","ймовірно","мабуть","здається","на мою думку","як на мене","напевно","певною мірою","в цілому","загалом","начебто","либонь"];
           hedges.forEach(h => {
-            const regex = new RegExp('(' + escapeRegex(h) + ')', "gi");
             const recText = "Пом'якшувальний вислів '" + h + "'. Хеджі притаманні людському мовленню; ШІ їх майже не вживає.";
-            const tooltipHtml = 'class="hl-span hl-hedges" data-interactive-mark="true" data-label="Пом\\'якшення (hedge)" data-desc="Маркер живого мовлення" data-rec="' + encodeURIComponent(recText) + '"';
-            result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+            const attrs = 'class="hl-span hl-hedges" data-interactive-mark="true" data-label="Пом\\'якшення (hedge)" data-desc="Маркер живого мовлення" data-rec="' + encodeURIComponent(recText) + '"';
+            result = replacePhraseSafe(result, h, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
           });
         }
         else if (activeHighlightIndicator === "structural" || activeHighlightIndicator === "entropy") {
-          const cliches = ["варто зазначити","важливо підкреслити","у сучасному світі","слід зазначити","таким чином","на закінчення","отже","у свою чергу","більше того","крім цього","зокрема","як-от","наприклад","важливо розуміти","не можна не помітити","можна сказати","слід додати"];
+          const cliches = ["варто зазначити","важливо підкреслити","у сучасному світі","слід зазначити","таким чином","на закінчення","у свою чергу","більше того","крім цього","як-от","важливо розуміти","не можна не помітити","можна сказати","слід додати"];
           cliches.forEach(c => {
-            const regex = new RegExp('(' + escapeRegex(c) + ')', "gi");
             const recText = "Структурне кліше '" + c + "'. Типовий шаблонний перехід ШІ. Рекомендація: приберіть або перефразуйте живіше.";
-            const tooltipHtml = 'class="hl-span hl-entropy" data-interactive-mark="true" data-label="Структурне кліше" data-desc="Шаблонний зворот ШІ" data-rec="' + encodeURIComponent(recText) + '"';
-            result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+            const attrs = 'class="hl-span hl-entropy" data-interactive-mark="true" data-label="Структурне кліше" data-desc="Шаблонний зворот ШІ" data-rec="' + encodeURIComponent(recText) + '"';
+            result = replacePhraseSafe(result, c, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
+          });
+        }
+        else if (activeHighlightIndicator === "valenceRange") {
+          const dry = ["здійснюється","реалізується","забезпечується","характеризується","являє собою","у зв'язку з","з метою","задля","відповідно до","в рамках","в контексті"];
+          dry.forEach(p => {
+            const recText = "Сухий канцелярський зворот '" + p + "'. ШІ уникає емоційності. Рекомендація: замініть живішою формулюванням.";
+            const attrs = 'class="hl-span hl-valence" data-interactive-mark="true" data-label="Сухий канцелярський стиль" data-desc="Емоційно нейтральний зворот" data-rec="' + encodeURIComponent(recText) + '"';
+            result = replacePhraseSafe(result, p, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
           });
         }
       }
       else if (selectedQuote) {
-        const escapedQuote = escapeRegex(selectedQuote);
-        const regex = new RegExp('(' + escapedQuote + ')', "gi");
-        const tooltipHtml = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="Структурний ШІ-маркер" data-desc="Виявлений шаблонний фрагмент" data-rec="' + encodeURIComponent("Цей фрагмент відповідає виявленому структурному маркеру генерації. Рекомендація: перепишіть його природнішою мовою.") + '"';
-        result = result.replace(regex, '<span ' + tooltipHtml + '>$1</span>');
+        const recText = "Цей фрагмент відповідає виявленому структурному маркеру генерації. Рекомендація: перепишіть його природнішою мовою.";
+        const attrs = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="Структурний ШІ-маркер" data-desc="Виявлений шаблонний фрагмент" data-rec="' + encodeURIComponent(recText) + '"';
+        result = replacePhraseSafe(result, selectedQuote, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
       }
       container.innerHTML = result;
     }
@@ -2732,6 +2835,32 @@ export default function App() {
 
       {/* Main Responsive Grid Layout */}
       <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 md:p-6 lg:p-8 flex flex-col gap-6">
+
+        {/* API request limits status (always under the export buttons / on main screen) */}
+        {rateLimitInfo && rateLimitInfo.requestsRemaining != null ? (
+          <div className="bg-white border border-emerald-200 rounded-2xl shadow-3xs px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+            <span className="flex items-center gap-1.5 font-bold text-emerald-700">
+              <Activity className="w-4 h-4 text-emerald-600" />
+              Ліміти API ({rateLimitInfo.provider.toUpperCase()})
+            </span>
+            <span className="text-slate-600">
+              Залишок запитів: <strong className="text-slate-900">{rateLimitInfo.requestsRemaining}{rateLimitInfo.requestsLimit != null ? ` / ${rateLimitInfo.requestsLimit}` : ""}</strong>
+            </span>
+            {rateLimitInfo.tokensRemaining != null && (
+              <span className="text-slate-600">Залишок токенів: <strong className="text-slate-900">{rateLimitInfo.tokensRemaining}</strong></span>
+            )}
+            {rateLimitInfo.resetText && (
+              <span className="text-slate-400">скидання: {rateLimitInfo.resetText}</span>
+            )}
+          </div>
+        ) : (
+          (provider === "groq" || provider === "openrouter") && (
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-3xs px-4 py-2.5 text-xs text-slate-400 flex items-center gap-1.5">
+              <Activity className="w-4 h-4 text-slate-300" />
+              Ліміти API з’являться тут після першого запиту до {provider.toUpperCase()}.
+            </div>
+          )
+        )}
 
         {/* Dynamic Mode Tab Switcher with Dropdown for remaining tools */}
         <div id="mode-tabs" className="bg-white p-2 rounded-2xl border border-slate-200 shadow-3xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
@@ -3103,6 +3232,7 @@ export default function App() {
                         <span>Зупинити аналіз</span>
                       </button>
                     ) : (
+                      <>
                       <button
                         onClick={handleAnalyze}
                         className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-xl shadow-md hover:shadow-indigo-100 flex items-center justify-center gap-2 transition-all cursor-pointer"
@@ -3110,6 +3240,14 @@ export default function App() {
                         <Sparkles className="w-4 h-4 fill-current" />
                         <span>Запустити експертну перевірку LinguaForensic</span>
                       </button>
+                      {inputText.trim().length > 0 && (
+                        <p className="text-[10px] text-slate-400 text-center mt-2 leading-relaxed">
+                          Орієнтовна вартість запиту: <strong className="text-slate-600">1 API-запит</strong> · приблизно{" "}
+                          <strong className="text-slate-600">~{estimateTokens()} токенів</strong>
+                          {activeTab === 4 ? " (Режим 4 — найдорожчий)" : ""}
+                        </p>
+                      )}
+                      </>
                     )}
                   </div>
                 </div>
@@ -3210,9 +3348,16 @@ export default function App() {
               )}
 
               <div 
-                className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 max-h-[350px] overflow-y-auto leading-relaxed text-sm prose max-w-none text-slate-800 cursor-text animate-in fade-in duration-300"
+                ref={previewContainerRef}
+                onClick={handlePreviewClick}
+                onMouseUp={() => { if (previewContainerRef.current) setPreviewHeight(previewContainerRef.current.offsetHeight); }}
+                className="relative border border-slate-200 rounded-xl p-4 bg-slate-50/50 overflow-y-auto leading-relaxed text-sm prose max-w-none text-slate-800 cursor-text animate-in fade-in duration-300"
+                style={{ height: previewHeight, minHeight: 150, maxHeight: 900, resize: "vertical" }}
                 dangerouslySetInnerHTML={{ __html: getHighlightedPreviewHtml() }}
               />
+              <div className="text-[9px] text-slate-400 text-right mt-1 flex items-center justify-end gap-1 select-none">
+                <MoveVertical className="w-3 h-3" /> Потягніть за нижній край, щоб змінити висоту вікна
+              </div>
 
               {selectedFragmentDetail && (
                 <div 
@@ -3432,6 +3577,15 @@ export default function App() {
                           <span className="text-[10px] font-mono font-extrabold bg-white/95 text-indigo-700 border border-indigo-100 rounded px-1.5 py-0.5 shadow-3xs" title="Довірчий інтервал">
                             ±{mode2Result.confidenceInterval}% CI
                           </span>
+                          <button
+                            type="button"
+                            onClick={() => { setShowAllProblems(v => !v); setActiveHighlightIndicators([]); setSelectedQuote(null); setSelectedFragmentDetail(null); }}
+                            className={`inline-flex items-center gap-1 text-[10px] font-bold rounded-lg px-2 py-1 border transition-all cursor-pointer ${showAllProblems ? "bg-rose-600 text-white border-rose-600 shadow-xs" : "bg-white/90 text-slate-600 border-slate-200 hover:border-rose-300 hover:text-rose-600"}`}
+                            title="Підсвітити всі проблемні місця, що роблять текст схожим на ШІ"
+                          >
+                            {showAllProblems ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            <span>{showAllProblems ? "Приховати все" : "Показати всі проблеми"}</span>
+                          </button>
                         </h4>
                       </div>
                       <span className="text-xs font-bold bg-white/90 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-700">
@@ -3479,6 +3633,7 @@ export default function App() {
                               {UNIFIED_CATEGORIES.map((cat, idx) => {
                                 const backendCat = findBackendCategory(cat.key, mode2Result.categories || []);
                                 const isHighlighted = activeHighlightIndicators.includes(cat.indicatorKey);
+                                const canHighlight = canHighlightIndicator(cat.indicatorKey);
                                 const displayValue = cat.getValue(mode2Result);
                                 
                                 const levelLabel = cat.key === "Surface-level" ? "Поверхневий рівень" :
@@ -3512,67 +3667,48 @@ export default function App() {
                                   }
                                 };
 
-                                const isCriticalFix = idx === 0;
-                                const isCaution = idx === 4;
-                                const isNaturalOk = idx === 8;
                                 const activeRowClass = getRowHighlightClass(cat.indicatorKey);
 
                                 return (
                                   <React.Fragment key={cat.key}>
-                                    {isCriticalFix && (
-                                      <tr className="bg-rose-50/70 select-none pointer-events-none">
-                                        <td colSpan={3} className="py-2.5 px-3 font-extrabold text-[10px] text-rose-850 tracking-wider uppercase border-b border-rose-100">
-                                          🚨 Критичні — Потребують виправлення (Critical - Fix)
-                                        </td>
-                                      </tr>
-                                    )}
-                                    {isCaution && (
-                                      <tr className="bg-amber-50/70 select-none pointer-events-none border-t border-slate-200">
-                                        <td colSpan={3} className="py-2.5 px-3 font-extrabold text-[10px] text-amber-850 tracking-wider uppercase border-b border-amber-100">
-                                          ⚠️ Чинники під загрозою — З обережністю (Critical - Caution)
-                                        </td>
-                                      </tr>
-                                    )}
-                                    {isNaturalOk && (
-                                      <tr className="bg-emerald-50/70 select-none pointer-events-none border-t border-slate-200">
-                                        <td colSpan={3} className="py-2.5 px-3 font-extrabold text-[10px] text-emerald-850 tracking-wider uppercase border-b border-emerald-100">
-                                          ✅ Природні елементи — В порядку (Excellent / Reinforcing)
-                                        </td>
-                                      </tr>
-                                    )}
                                     <tr 
                                       onClick={() => {
+                                        if (!canHighlight) return;
                                         toggleHighlightIndicator(cat.indicatorKey);
                                         setSelectedFragmentDetail(null);
                                         if (previewContainerRef.current) {
                                           previewContainerRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
                                         }
                                       }}
-                                      className={`border-b border-slate-100 last:border-b-0 cursor-pointer transition-all ${
-                                        isHighlighted 
-                                          ? activeRowClass 
-                                          : "hover:bg-slate-50/50"
+                                      className={`border-b border-slate-100 last:border-b-0 transition-all ${
+                                        !canHighlight
+                                          ? "opacity-55 cursor-not-allowed"
+                                          : isHighlighted 
+                                            ? activeRowClass + " cursor-pointer"
+                                            : "hover:bg-slate-50/50 cursor-pointer"
                                       }`}
-                                      title="Натисніть рядок або тумблер, щоб увімкнути/вимкнути підсвічування"
+                                      title={canHighlight ? "Натисніть рядок або тумблер, щоб увімкнути/вимкнути підсвічування" : "Для цього показника немає фрагментів у поточному тексті"}
                                     >
                                       <td className="py-2 px-2.5">
                                         <div className="flex items-center gap-2.5">
                                           {/* Toggle Switch */}
                                           <button
                                             type="button"
+                                            disabled={!canHighlight}
                                             onClick={(e) => {
                                               e.stopPropagation();
+                                              if (!canHighlight) return;
                                               toggleHighlightIndicator(cat.indicatorKey);
                                               setSelectedFragmentDetail(null);
                                             }}
-                                            className={`w-7 h-4 rounded-full transition-colors relative focus:outline-none shrink-0 cursor-pointer ${
-                                              isHighlighted ? "bg-indigo-600" : "bg-slate-200"
+                                            className={`w-7 h-4 rounded-full transition-colors relative focus:outline-none shrink-0 ${
+                                              !canHighlight ? "bg-slate-150 cursor-not-allowed" : isHighlighted ? "bg-indigo-600 cursor-pointer" : "bg-slate-200 cursor-pointer"
                                             }`}
-                                            title="Увімкнути/вимкнути підсвічування"
+                                            title={canHighlight ? "Увімкнути/вимкнути підсвічування" : "Немає фрагментів для підсвічування"}
                                           >
                                             <span
                                               className={`block w-2.5 h-2.5 rounded-full bg-white shadow-xs transform transition-transform absolute top-[3px] ${
-                                                isHighlighted ? "translate-x-3.5" : "translate-x-1"
+                                                isHighlighted && canHighlight ? "translate-x-3.5" : "translate-x-1"
                                               }`}
                                             />
                                           </button>
@@ -3664,6 +3800,57 @@ export default function App() {
                         {mode2Result.conclusion}
                       </p>
                     </div>
+
+                    {/* AI Overview / GEO readiness */}
+                    {(mode2Result.aiOverviewVerdict || mode2Result.suggestedTldr || (mode2Result.aiOverviewTips && mode2Result.aiOverviewTips.length > 0)) && (
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Придатність для цитування нейромережами (AI Overview / GEO)</span>
+                        <div className="border border-violet-200 bg-violet-50/50 rounded-xl p-3.5 space-y-3">
+                          {typeof mode2Result.aiOverviewScore === "number" && (
+                            <div className="flex items-center gap-2.5">
+                              <div className="flex-1 h-2 bg-violet-100 rounded-full overflow-hidden">
+                                <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${Math.max(0, Math.min(100, mode2Result.aiOverviewScore))}%` }} />
+                              </div>
+                              <span className="text-xs font-black text-violet-800 shrink-0">{mode2Result.aiOverviewScore}/100</span>
+                            </div>
+                          )}
+                          {mode2Result.aiOverviewVerdict && (
+                            <p className="text-xs text-slate-700 leading-relaxed font-medium">{mode2Result.aiOverviewVerdict}</p>
+                          )}
+                          {mode2Result.aiOverviewTips && mode2Result.aiOverviewTips.length > 0 && (
+                            <div className="space-y-1.5">
+                              <span className="text-[10px] font-bold text-violet-700 uppercase tracking-wider block">Як покращити для цитування ШІ:</span>
+                              <ul className="space-y-1">
+                                {mode2Result.aiOverviewTips.map((tip, i) => (
+                                  <li key={i} className="text-[11px] text-slate-600 leading-relaxed flex gap-1.5">
+                                    <span className="text-violet-500 font-bold shrink-0">→</span>
+                                    <span>{tip}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {mode2Result.suggestedTldr && (
+                            <div className="space-y-1.5 bg-white border border-violet-200 rounded-lg p-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-extrabold text-violet-700 uppercase tracking-wider flex items-center gap-1">
+                                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                                  Готовий TL;DR для ШІ
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => { navigator.clipboard?.writeText(mode2Result.suggestedTldr || ""); setCopiedText("tldr"); setTimeout(() => setCopiedText(null), 1500); }}
+                                  className="text-[10px] font-bold text-violet-600 hover:text-violet-800 border border-violet-200 hover:bg-violet-50 rounded px-2 py-0.5 cursor-pointer transition-colors"
+                                >
+                                  {copiedText === "tldr" ? "Скопійовано!" : "Копіювати"}
+                                </button>
+                              </div>
+                              <p className="text-[11px] text-slate-700 leading-relaxed italic">{mode2Result.suggestedTldr}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Export triggers removed in favor of top-bar global export buttons */}
                   </div>

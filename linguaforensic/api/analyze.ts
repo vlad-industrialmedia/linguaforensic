@@ -35,7 +35,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
 
       if (result.ok) {
-        res.status(200).json(result.json);
+        res.status(200).json({ ...result.json, _rateLimit: result.rateLimit || null });
         return;
       }
 

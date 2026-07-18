@@ -48,7 +48,7 @@ You output an expert assessment matching the requested mode in a structured JSON
 
 CRITICAL REQUIREMENT: All output strings (verdict, domain, modelGroup, keyMarkers, category names, scores, marker descriptions, changes, stopReason, qualityAssessment, comparisons title, and conclusion) MUST be strictly in UKRAINIAN language (українською мовою).
 
-SCORING SCALE (STRICT): The "score" field is the probability that the text is AI-generated, expressed as an INTEGER PERCENTAGE from 0 to 100 (NOT a 0-1 fraction). 0 = clearly human, 100 = clearly AI. For example write 80, never 0.80. Calibrate consistently: dominant AI structural markers and high TTR with low sentence-length variance => 70-95; mixed signals => 40-65; natural human variance, hedges, digressions => 5-35. Apply the SAME calibration regardless of which underlying model you are.
+SCORING (IMPORTANT): The "score" field is the probability that the text is AI-generated, expressed as an INTEGER PERCENTAGE from 0 to 100 (write 80, never 0.80). Derive this score ONLY from the actual measured linguistic evidence in the categories below — do NOT anchor to any default value. Weigh the domain-adapted category scores and the structural markers you actually detect. Many genuinely human-written texts (including professional copywriting, journalism, and marketing) legitimately score LOW (10-45) even when well-structured: good structure alone is NOT evidence of AI. Reserve high scores (70-100) for texts that actually exhibit the AI fingerprint — very high TTR combined with low sentence-length variance (CV<0.3), near-absent hedges, uniform paragraph structure, and multiple template markers together. If the evidence is weak or mixed, the score MUST be correspondingly low or moderate. Two different human texts should NOT both land on the same number — let the measured features spread the scores out.
 
 Below is the expert methodology you MUST apply:
 1. CATEGORIES OF FEATURES:
@@ -302,13 +302,14 @@ export function buildPrompt(
   const textLength = text ? text.length : 0;
   const isLongText = textLength > 3500;
   const optimizationNotice = isLongText
-    ? `\n\n[TIMEOUT PROTECTION NOTICE: The input text is very long (${textLength} characters). To avoid gateway timeouts, keep your analyses, descriptions, and structural patterns extremely concise and brief. Extract at most 4-5 key structural patterns in total instead of dozens.]`
+    ? `\n\n[NOTE: The input text is long (${textLength} characters). Keep DESCRIPTIVE prose (category descriptions, marker descriptions, conclusion) concise to avoid timeouts, and report the most important structural patterns rather than every occurrence. This note affects only verbosity of descriptions — it must NOT change how accurately you measure features or compute the score. Analyze the ENTIRE text.]`
     : "";
 
   if (mode === 1) {
     return `
       Виконайте Режим 1 (Швидка детекція) для наступного тексту.
       Проведіть аналіз 284 лінгвістичних параметрів та 16 структурних маркерів.
+      Оцінку роботності (score) виведіть ВИКЛЮЧНО з реально виміряних ознак цього тексту (CV довжини речень, TTR, гапакс, хеджі, шаблонні маркери тощо). Не підставляйте типове чи заокруглене число. Природний людський текст із живою варіативністю має отримати НИЗЬКУ оцінку, навіть якщо він структурований.
       Поверніть строго JSON відповідно до схеми Mode1Schema.
       ${optimizationNotice}
 
@@ -323,6 +324,7 @@ export function buildPrompt(
       Виконайте Режим 2 (Повна детекція з деталями) для наступного тексту.
       Проведіть детальний розрахунок за всіма 12 категоріями оцінок (включаючи вагу за доменом та внесок у загальну оцінку), розрахуйте всі ключові числові індикатори (TTR, щільність, гапакс, ентропія, CV, дерево залежностей, число хеджів, Flesch Reading Ease, діапазон валентності) та виявіть структурні патерни з конкретними цитатами.
       Дайте обґрунтування групи моделі та детальний розгорнутий висновок.
+      Загальна оцінка (score) мусить логічно випливати із суми виважених за доменом оцінок категорій — не підставляйте типове/заокруглене число і не anchor-те до попередніх результатів. Різні тексти повинні давати різні оцінки. Живий людський текст із високою варіативністю речень, хеджами та відступами отримує НИЗЬКУ оцінку навіть за наявності структури.
       ДОДАТКОВО оцініть придатність тексту для цитування нейромережами (AI Overview / GEO): заповніть aiOverviewScore (0-100), aiOverviewVerdict (короткий вердикт), aiOverviewTips (2-4 поради: чіткість відповіді на початку блоку, наявність фактів/визначень, структура під сніпет, унікальність) та suggestedTldr (готовий стислий TL;DR на 2-3 речення, який ШІ міг би процитувати). Усе — українською.
       Поверніть строго JSON відповідно до схеми Mode2Schema.
       ${optimizationNotice}
@@ -347,10 +349,14 @@ export function buildPrompt(
       - Максимальна довжина правок / структура: ${maxChanges}
 
       Застосуйте стратегії зниження Type-Token Ratio, руйнування триколонів, додавання природної варіативності речень, усунення вступних заглушок на кшталт "важливо зазначити" або фінальних резюме. НЕ допускайте спотворення фактів та створення штучних одруків.
+
+      ОБОВ'ЯЗКОВО:
+      1. Перепишіть ВЕСЬ наданий текст повністю (усі абзаци, від початку до кінця). Поле 'rewrittenText' мусить містити повний переписаний текст такого ж обсягу, що й оригінал — заборонено обробляти лише фрагмент чи обрізати.
+      2. scoreBefore та scoreAfter мусять бути РЕАЛЬНО ВИМІРЯНІ за методологією 300 індикаторів (scoreBefore — на оригіналі, scoreAfter — на переписаному тексті). Не вигадуйте числа; вони мають узгоджуватися з тим, що показав би повний аналіз (Режим 2) тих самих текстів.
       Поверніть строго JSON відповідно до схеми Mode3Schema.
       ${optimizationNotice}
 
-      ТЕКСТ ДЛЯ РЕРАЙТУ:
+      ПОВНИЙ ТЕКСТ ДЛЯ РЕРАЙТУ:
       """
       ${text}
       """
@@ -358,41 +364,24 @@ export function buildPrompt(
   }
   if (mode === 4) {
     const iterations = Math.min(parameters?.iterations ?? 3, 3);
-    if (isLongText) {
-      return `
-        Виконайте Режим 4 (Циклічний рекурсивний рерайт) для великого тексту (${textLength} символів).
-        КРИТИЧНО ДЛЯ УНИКНЕННЯ ТАЙМАУТУ:
-        Виконайте один якісний глибокий рерайт тексту, який рішуче знижує оцінку роботності до <${parameters?.targetPercent ?? 25}%. Помістіть цей підсумковий текст у 'finalText' та як останній знімок (textSnapshot) в ітераціях.
-        У масиві 'iterations' змоделюйте історію з 3 кроків для гарної візуалізації в інтерфейсі:
-        - Крок 0 (iteration: 0): Вихідний текст, статус 'база', короткий textSnapshot (до 200 символів), оцінка роботності висока.
-        - Крок 1 (iteration: 1): Прогрес рерайту, статус 'прийнято', проробка синтаксису, оцінка середня (наприклад 55%).
-        - Крок 2 (iteration: 2): Фінальна версія, статус 'прийнято', оцінка низька (наприклад 15-20%), textSnapshot збігається з кінцем finalText.
-
-        Поверніть строго JSON відповідно до схеми Mode4Schema.
-
-        ТЕКСТ ДЛЯ ЦИКЛІЧНОГО РЕРАЙТУ:
-        """
-        ${text}
-        """
-      `;
-    }
+    const target = parameters?.targetPercent ?? 25;
     return `
-      Виконайте Режим 4 (Циклічний рекурсивний рерайт) до ${iterations} ітерацій.
-      Ви маєте змоделювати покроковий процес циклічного рерайту та детекції:
-      - Крок 0: Вихідний текст (база)
-      - Для кожної ітерації:
-        1. Зробіть аналіз роботності.
-        2. Якщо вище цілі, зробіть рерайт.
-        3. Виконайте Sense-check (збереження сенсу), Style-check (збереження природності), Integrity-check (збереження цифр, фактів).
-        4. Якщо якість деградувала, відкотіться (позначте статус 'відкат' та поверніться до попередньої версії). Інакше прийміть версію (статус 'прийнято').
-        5. Якщо ціль (<25% роботності) досягнута або настало плато (немає зниження), зупиніть цикл достроково.
+      Виконайте Режим 4 (Циклічний рекурсивний рерайт) до ${iterations} ітерацій для ПОВНОГО тексту нижче (${textLength} символів).
 
-      CRITICAL PERFORMANCE REQUIREMENT: Keep descriptions, evaluations, and textSnapshots extremely brief and concise. Do not generate excessively long text repetitions.
+      ОБОВ'ЯЗКОВІ ПРАВИЛА (не порушувати):
+      1. Обробіть та перепишіть ВЕСЬ наданий текст повністю, від початку до кінця. Заборонено скорочувати, обрізати чи обробляти лише фрагмент. Поле 'finalText' МУСИТЬ містити повністю переписаний текст такого ж обсягу, що й оригінал (усі абзаци).
+      2. Усі числові оцінки роботності (score у кожній ітерації, scoreBefore, scoreAfter) мусять бути РЕАЛЬНО ВИМІРЯНІ за методологією 300 індикаторів на фактичному тексті кожної ітерації. КАТЕГОРИЧНО заборонено вигадувати або підставляти умовні числа (55%, 15-20% тощо). Якщо після рерайту роботність за виміром не впала — чесно покажіть це.
+      3. scoreBefore = виміряна роботність оригіналу. scoreAfter = виміряна роботність фінального тексту. Вони мають узгоджуватися з тим, що показав би повний аналіз (Режим 2) того самого тексту.
 
-      Поверніть повну історію ітерацій та підсумковий текст.
+      Покроковий процес:
+      - Крок 0 (iteration 0): вихідний текст, статус 'база', виміряна роботність. У textSnapshot покладіть репрезентативний уривок (перші ~250 символів) — це лише для візуалізації.
+      - Для кожної наступної ітерації: виміряйте роботність → якщо вище цілі (<${target}%), перепишіть увесь текст, знижуючи TTR, руйнуючи триколони, додаючи варіативність довжини речень, прибираючи вступні кліше та фінальні резюме; виконайте Sense-check, Style-check, Integrity-check (числа/факти/імена незмінні); якщо якість погіршилась — статус 'відкат', інакше 'прийнято'.
+      - Зупиніться, коли досягнуто цілі або настало плато.
+
+      finalText = повний фінальний переписаний текст (не уривок!). Описи (senseCheck, styleCheck тощо) тримайте стислими, але finalText — повний.
       Поверніть строго JSON відповідно до схеми Mode4Schema.
 
-      ТЕКСТ ДЛЯ ЦИКЛІЧНОГО РЕРАЙТУ:
+      ПОВНИЙ ТЕКСТ ДЛЯ ЦИКЛІЧНОГО РЕРАЙТУ:
       """
       ${text}
       """
@@ -546,6 +535,21 @@ export async function runAnalysis(params: {
   const selectedModel = params.model || getDefaultModel(provider);
   const temperature = mode === 3 || mode === 4 ? 0.2 : 0;
 
+  // Output token budget. Rewrite modes (3, 4) and comparison (5) must be able
+  // to return the FULL rewritten text plus JSON overhead, otherwise the answer
+  // gets truncated to a fragment. Estimate from input length (~1 token per 3
+  // Ukrainian/Russian chars) and give rewrite modes extra headroom.
+  const inputLen = mode === 5
+    ? (texts || []).reduce((s, t) => s + (t?.length || 0), 0)
+    : (text?.length || 0);
+  const inputTokens = Math.ceil(inputLen / 3);
+  let maxOutputTokens: number;
+  if (mode === 3) maxOutputTokens = Math.min(32000, inputTokens * 2 + 1500);
+  else if (mode === 4) maxOutputTokens = Math.min(32000, inputTokens * 3 + 2500);
+  else if (mode === 5) maxOutputTokens = Math.min(16000, inputTokens + 3000);
+  else if (mode === 2) maxOutputTokens = 8000;
+  else maxOutputTokens = 2000;
+
   // ---- Gemini path ----
   if (provider === "gemini") {
     const apiKey = params.apiKey || process.env.GEMINI_API_KEY;
@@ -559,6 +563,7 @@ export async function runAnalysis(params: {
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
         temperature,
+        maxOutputTokens,
         responseMimeType: "application/json",
         responseSchema,
       },
@@ -594,6 +599,7 @@ export async function runAnalysis(params: {
         { role: "user", content: userMessage },
       ],
       temperature,
+      max_tokens: maxOutputTokens,
       response_format: { type: "json_object" },
     };
   } else if (provider === "openrouter") {
@@ -608,6 +614,7 @@ export async function runAnalysis(params: {
         { role: "user", content: userMessage },
       ],
       temperature,
+      max_tokens: maxOutputTokens,
       response_format: { type: "json_object" },
     };
   } else if (provider === "cohere") {
@@ -620,6 +627,7 @@ export async function runAnalysis(params: {
         { role: "user", content: userMessage },
       ],
       temperature,
+      max_tokens: maxOutputTokens,
       response_format: { type: "json_object" },
     };
   } else {

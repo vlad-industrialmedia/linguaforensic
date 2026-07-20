@@ -896,7 +896,7 @@ export default function App() {
   const [activeExplainingCategory, setActiveExplainingCategory] = useState<string | null>(null);
   const [activeIterationIndex, setActiveIterationIndex] = useState<number>(0);
   const [selectedQuote, setSelectedQuote] = useState<string | null>(null);
-  const [previewHeight, setPreviewHeight] = useState<number>(350);
+  const [previewHeight, setPreviewHeight] = useState<number>(600);
   const [showAllProblems, setShowAllProblems] = useState<boolean>(false);
 
   const editorRef = useRef<HTMLDivElement>(null);
@@ -1414,14 +1414,19 @@ export default function App() {
     // stays reliable AND the text keeps its shape. If there's no HTML, fall back
     // to escaped plain text with line breaks.
     const sanitizeFormatting = (html: string): string => {
-      const allowed = new Set(["p","br","ul","ol","li","h1","h2","h3","h4","h5","h6","strong","b","em","i","u","blockquote","div","span"]);
-      // Remove tag attributes and disallowed tags, keep allowed tag skeletons.
+      const allowed = new Set(["p","br","ul","ol","li","h1","h2","h3","h4","h5","h6","strong","b","em","i","u","s","sub","sup","blockquote","div","span","a","mark","font","table","thead","tbody","tr","td","th","hr","small","code","pre"]);
+      // Drop comments and any DISALLOWED tag, but KEEP allowed tags together
+      // with their attributes (style/colour/size) so the pasted formatting is
+      // preserved. The highlight matchers skip tag contents, so attributes are
+      // harmless for matching. We only strip event handlers for safety.
       return html
         .replace(/<!--[\s\S]*?-->/g, "")
-        .replace(/<\/?([a-zA-Z0-9]+)(\s[^>]*)?>/g, (m, tag) => {
+        .replace(/<\/?([a-zA-Z0-9]+)((?:\s[^>]*)?)>/g, (m, tag, attrs) => {
           const t = String(tag).toLowerCase();
           if (!allowed.has(t)) return "";
-          return m.startsWith("</") ? `</${t}>` : `<${t}>`;
+          if (m.startsWith("</")) return `</${t}>`;
+          const safeAttrs = String(attrs || "").replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+          return `<${t}${safeAttrs}>`;
         });
     };
 
@@ -1452,7 +1457,10 @@ export default function App() {
     };
 
     const replaceSentenceOutsideHtml = (htmlContent: string, sentence: string, replaceFn: (match: string) => string) => {
-      const escapedSentence = buildPattern(sentence);
+      // Allow whitespace in the sentence to match whitespace OR tags (<br>, </p>,
+      // list boundaries) so a sentence still matches when the formatted preview
+      // splits it across block elements. Also normalize apostrophes.
+      const escapedSentence = buildPattern(sentence).replace(/\s+/g, "(?:\\s|<[^>]+>)+");
       const regex = new RegExp(`(<[^>]+>)|(${escapedSentence})`, "gi");
       return htmlContent.replace(regex, (match, tag, sentenceMatch) => {
         if (tag) return tag;
@@ -2599,11 +2607,13 @@ export default function App() {
         return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
       }
       function sanitizeFormatting(html) {
-        var allowed = { p:1, br:1, ul:1, ol:1, li:1, h1:1, h2:1, h3:1, h4:1, h5:1, h6:1, strong:1, b:1, em:1, i:1, u:1, blockquote:1, div:1, span:1 };
-        return html.replace(/<!--[\\s\\S]*?-->/g, "").replace(/<\\/?([a-zA-Z0-9]+)(\\s[^>]*)?>/g, function(m, tag){
+        var allowed = { p:1, br:1, ul:1, ol:1, li:1, h1:1, h2:1, h3:1, h4:1, h5:1, h6:1, strong:1, b:1, em:1, i:1, u:1, s:1, sub:1, sup:1, blockquote:1, div:1, span:1, a:1, mark:1, font:1, table:1, thead:1, tbody:1, tr:1, td:1, th:1, hr:1, small:1, code:1, pre:1 };
+        return html.replace(/<!--[\\s\\S]*?-->/g, "").replace(/<\\/?([a-zA-Z0-9]+)((?:\\s[^>]*)?)>/g, function(m, tag, attrs){
           var t = String(tag).toLowerCase();
           if (!allowed[t]) return "";
-          return m.indexOf("</") === 0 ? "</" + t + ">" : "<" + t + ">";
+          if (m.indexOf("</") === 0) return "</" + t + ">";
+          var safeAttrs = String(attrs || "").replace(/\\son\\w+\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)/gi, "");
+          return "<" + t + safeAttrs + ">";
         });
       }
       var result;
@@ -2741,6 +2751,28 @@ export default function App() {
             const attrs = 'class="hl-span hl-entropy" data-interactive-mark="true" data-label="Структурне кліше" data-desc="Шаблонний зворот ШІ" data-rec="' + encodeURIComponent(recText) + '"';
             result = replacePhraseSafe(result, c, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
           });
+          // Also highlight the backend-detected structural patterns (the ones
+          // listed in "Виявлені кліше та структурні ШІ-маркери").
+          if (mode2Result && mode2Result.structuralPatterns) {
+            mode2Result.structuralPatterns.forEach(function(p){
+              var attrs = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="' + encodeURIComponent(p.marker) + '" data-desc="' + encodeURIComponent(p.description) + '" data-rec="' + encodeURIComponent("") + '"';
+              var cq = String(p.quote).trim().replace(/^["'«»„“]+|["'«»„“.!?,;:]+$/g, "");
+              if (!cq) return;
+              var hf = function(fragment){
+                var t = fragment.trim(); if (!t) return false;
+                var esc = t.replace(/[-\\/\\\\^$*+?.()|[\\\\\]{}]/g, "\\\\$&").replace(/\\s+/g, "(?:\\\\s|<[^>]+>)+");
+                var got = false;
+                try {
+                  var re = new RegExp("(<[^>]+>)|(" + esc + ")", "gi");
+                  result = result.replace(re, function(mm, tag, frag){ if (tag) return tag; got = true; return '<span ' + attrs + '>' + frag + '</span>'; });
+                } catch (e) { return false; }
+                return got;
+              };
+              var ww = cq.split(/\\s+/);
+              var tt = [cq, ww.slice(0,6).join(" "), ww.slice(0,3).join(" "), ww[0]];
+              for (var k = 0; k < tt.length; k++) { if (tt[k] && hf(tt[k])) break; }
+            });
+          }
         }
         else if (activeHighlightIndicator === "valenceRange") {
           const dry = ["здійснюється","реалізується","забезпечується","характеризується","являє собою","у зв'язку з","з метою","задля","відповідно до","в рамках","в контексті"];
@@ -3168,7 +3200,7 @@ export default function App() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           
           {/* LEFT PANEL: Input Panel & Editing tools */}
-          <div className="lg:col-span-6 flex flex-col gap-4">
+          <div className="lg:col-span-7 flex flex-col gap-4">
 
 
             <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-col gap-4">
@@ -3616,7 +3648,7 @@ export default function App() {
           </div>
 
           {/* RIGHT PANEL: Results & Metrics Visualizer (span 5) */}
-          <div className="lg:col-span-6 flex flex-col gap-4">
+          <div className="lg:col-span-5 flex flex-col gap-4">
             
             <AnimatePresence mode="wait">
               

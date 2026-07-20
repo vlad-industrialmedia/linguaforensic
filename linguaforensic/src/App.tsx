@@ -1183,7 +1183,7 @@ export default function App() {
           }
           setSelectedFragmentDetail({
             label: marker, quote, desc: description,
-            rec: "Рекомендація: Замініть цей вираз або структуру на менш шаблонну, розбийте речення на частини або спростіть формулювання.",
+            rec: "",
             style: s,
           });
         }, 320);
@@ -1194,7 +1194,7 @@ export default function App() {
         label: marker,
         quote: quote,
         desc: description,
-        rec: "Рекомендація: Замініть цей вираз або структуру на менш шаблонну, розбийте речення на частини або спростіть формулювання.",
+        rec: "",
         style,
       });
     }, 150);
@@ -1406,11 +1406,31 @@ export default function App() {
     const escapeHtml = (s: string) =>
       s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-    // IMPORTANT: highlight against the PLAIN text (escaped), not inputHtml.
-    // Matching words/phrases inside rich HTML fails when words span tags or
-    // contain entities, which is why some toggles highlighted nothing. Using
-    // escaped plain text guarantees every detected fragment can be matched.
-    let result = escapeHtml(textForAnalysis).replace(/\n/g, "<br>");
+    // Base for highlighting. We WANT to keep the original formatting (headings,
+    // paragraphs, lists, bold) the user pasted, but risky/ambiguous markup can
+    // break matching. So: if we have rich HTML, keep only structural formatting
+    // tags (block + basic inline) and drop everything else. Words are never
+    // split by these tags, and the matchers skip tag contents, so highlighting
+    // stays reliable AND the text keeps its shape. If there's no HTML, fall back
+    // to escaped plain text with line breaks.
+    const sanitizeFormatting = (html: string): string => {
+      const allowed = new Set(["p","br","ul","ol","li","h1","h2","h3","h4","h5","h6","strong","b","em","i","u","blockquote","div","span"]);
+      // Remove tag attributes and disallowed tags, keep allowed tag skeletons.
+      return html
+        .replace(/<!--[\s\S]*?-->/g, "")
+        .replace(/<\/?([a-zA-Z0-9]+)(\s[^>]*)?>/g, (m, tag) => {
+          const t = String(tag).toLowerCase();
+          if (!allowed.has(t)) return "";
+          return m.startsWith("</") ? `</${t}>` : `<${t}>`;
+        });
+    };
+
+    let result: string;
+    if (inputHtml && /<\/?(p|br|ul|ol|li|h[1-6]|strong|b|em|i|div|blockquote)\b/i.test(inputHtml)) {
+      result = sanitizeFormatting(inputHtml);
+    } else {
+      result = escapeHtml(textForAnalysis).replace(/\n/g, "<br>");
+    }
 
     const escapeRegex = (string: string) => {
       return string.replace(/[-\/\\^$*+?.()|[\\\]{}]/g, "\\$&");
@@ -1628,18 +1648,54 @@ export default function App() {
     // toggle) or has selected a specific pattern — otherwise the preview starts
     // clean and highlights appear only for the chosen category/pattern.
     if (mode2Result && mode2Result.structuralPatterns) {
+      // Match a fragment even if the rendered text broke it across <br> / lines /
+      // list items: every run of whitespace in the quote is allowed to match
+      // whitespace OR <br> tags in the HTML. Returns true if anything matched.
+      const highlightFragment = (fragment: string, tooltipHtml: string): boolean => {
+        const trimmed = fragment.trim();
+        if (!trimmed) return false;
+        // Escape, then turn whitespace runs into a flexible separator.
+        const escaped = trimmed
+          .replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&")
+          .replace(/\s+/g, "(?:\\s|<[^>]+>)+");
+        let matched = false;
+        try {
+          const re = new RegExp(`(<[^>]+>)|(${escaped})`, "gi");
+          result = result.replace(re, (m, tag, frag) => {
+            if (tag) return tag;
+            matched = true;
+            return `<span ${tooltipHtml}>${frag}</span>`;
+          });
+        } catch {
+          return false;
+        }
+        return matched;
+      };
+
       mode2Result.structuralPatterns.forEach((p) => {
         const isSelected = selectedQuote && selectedQuote.toLowerCase() === p.quote.toLowerCase();
-        if (!showAllProblems && !isSelected) return;
+        const structuralOn = activeHighlightIndicators.includes("structural") || activeHighlightIndicators.includes("entropy");
+        if (!showAllProblems && !isSelected && !structuralOn) return;
 
         const hlClass = isSelected
           ? "bg-amber-300 border-b-2 border-amber-600 font-extrabold px-1 py-0.5 rounded-md cursor-pointer text-slate-950 shadow-md ring-2 ring-amber-400 scale-[1.02] inline-block transition-all duration-300 animate-pulse"
           : "bg-red-100 border-b-2 border-red-500 font-medium px-0.5 rounded-sm cursor-pointer hover:bg-red-200 text-slate-900 transition-colors";
-          
-        const tooltipHtml = `class="${hlClass}" data-interactive-mark="true" data-quote="${encodeURIComponent(p.quote)}" data-type="structural" data-label="${encodeURIComponent(p.marker)}" data-desc="${encodeURIComponent(p.description)}" data-rec="${encodeURIComponent("Рекомендація: Замініть цей шаблонний фрагмент або перефразуйте речення.")}"`;
+
+        const tooltipHtml = `class="${hlClass}" data-interactive-mark="true" data-quote="${encodeURIComponent(p.quote)}" data-type="structural" data-label="${encodeURIComponent(p.marker)}" data-desc="${encodeURIComponent(p.description)}" data-rec="${encodeURIComponent("")}"`;
         const cleanQuote = p.quote.trim().replace(/^["'«»„“]+|["'«»„“.!?,;:]+$/g, "");
-        if (cleanQuote.length > 0) {
-          result = replaceSentenceOutsideHtml(result, cleanQuote, (m) => `<span ${tooltipHtml}>${m}</span>`);
+        if (!cleanQuote) return;
+
+        // Try full quote → first 6 words → first 3 words → first word, so the
+        // start of the problem fragment always gets highlighted with its tooltip.
+        const words = cleanQuote.split(/\s+/);
+        const attempts = [
+          cleanQuote,
+          words.slice(0, 6).join(" "),
+          words.slice(0, 3).join(" "),
+          words[0],
+        ];
+        for (const attempt of attempts) {
+          if (attempt && highlightFragment(attempt, tooltipHtml)) break;
         }
       });
     }
@@ -2388,6 +2444,12 @@ export default function App() {
     const mode2Result = ${mode2Result ? escapeJSString(mode2Result) : "null"};
     const inputText = ${escapeJSString(inputText)};
     const inputHtml = ${escapeJSString(inputHtml)};
+    window.__patternMeta = {};
+    if (mode2Result && mode2Result.structuralPatterns) {
+      mode2Result.structuralPatterns.forEach(function(p){
+        window.__patternMeta[String(p.quote).toLowerCase()] = { marker: p.marker, description: p.description };
+      });
+    }
 
     let activeHighlightIndicator = null;
     let selectedQuote = null;
@@ -2536,7 +2598,20 @@ export default function App() {
       function escapeHtml(s) {
         return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
       }
-      let result = escapeHtml(inputText).replace(/\\n/g, "<br>");
+      function sanitizeFormatting(html) {
+        var allowed = { p:1, br:1, ul:1, ol:1, li:1, h1:1, h2:1, h3:1, h4:1, h5:1, h6:1, strong:1, b:1, em:1, i:1, u:1, blockquote:1, div:1, span:1 };
+        return html.replace(/<!--[\\s\\S]*?-->/g, "").replace(/<\\/?([a-zA-Z0-9]+)(\\s[^>]*)?>/g, function(m, tag){
+          var t = String(tag).toLowerCase();
+          if (!allowed[t]) return "";
+          return m.indexOf("</") === 0 ? "</" + t + ">" : "<" + t + ">";
+        });
+      }
+      var result;
+      if (inputHtml && /<\\/?(p|br|ul|ol|li|h[1-6]|strong|b|em|i|div|blockquote)\\b/i.test(inputHtml)) {
+        result = sanitizeFormatting(inputHtml);
+      } else {
+        result = escapeHtml(inputText).replace(/\\n/g, "<br>");
+      }
 
       function escapeRegex(string) {
         return string.replace(/[-\\/\\\\^$*+?.()|[\\\\\]{}]/g, "\\\\$&");
@@ -2677,11 +2752,25 @@ export default function App() {
         }
       }
       else if (selectedQuote) {
-        const recText = "Цей фрагмент відповідає виявленому структурному маркеру генерації. Рекомендація: перепишіть його природнішою мовою.";
-        const attrs = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="Структурний ШІ-маркер" data-desc="Виявлений шаблонний фрагмент" data-rec="' + encodeURIComponent(recText) + '"';
+        var meta = (window.__patternMeta && window.__patternMeta[selectedQuote.toLowerCase()]) || {};
+        var label = meta.marker || "Структурний ШІ-маркер";
+        var desc = meta.description || "Виявлений шаблонний фрагмент";
+        var attrs = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="' + encodeURIComponent(label) + '" data-desc="' + encodeURIComponent(desc) + '" data-rec="' + encodeURIComponent("") + '"';
         var cleanQuote = selectedQuote.trim().replace(/^["'«»„“]+|["'«»„“.!?,;:]+$/g, "");
         if (cleanQuote.length > 0) {
-          result = replacePhraseSafe(result, cleanQuote, function(m){ return '<span ' + attrs + '>' + m + '</span>'; });
+          var highlightFrag = function(fragment) {
+            var t = fragment.trim(); if (!t) return false;
+            var esc = t.replace(/[-\\/\\\\^$*+?.()|[\\\\\]{}]/g, "\\\\$&").replace(/\\s+/g, "(?:\\\\s|<[^>]+>)+");
+            var m2 = false;
+            try {
+              var re = new RegExp("(<[^>]+>)|(" + esc + ")", "gi");
+              result = result.replace(re, function(mm, tag, frag){ if (tag) return tag; m2 = true; return '<span ' + attrs + '>' + frag + '</span>'; });
+            } catch (e) { return false; }
+            return m2;
+          };
+          var w = cleanQuote.split(/\\s+/);
+          var tries = [cleanQuote, w.slice(0,6).join(" "), w.slice(0,3).join(" "), w[0]];
+          for (var ti = 0; ti < tries.length; ti++) { if (tries[ti] && highlightFrag(tries[ti])) break; }
         }
       }
       container.innerHTML = result;
@@ -2693,9 +2782,9 @@ export default function App() {
 
       popover.innerHTML = '<div style="font-weight: 800; font-size: 11px; text-transform: uppercase; color: #818cf8; margin-bottom: 4px;">' + label + '</div>' +
         '<div style="font-size: 11px; font-weight: 500; margin-bottom: 6px; line-height: 1.4;">' + desc + '</div>' +
-        '<div style="font-size: 10px; color: #94a3b8; border-top: 1px solid #334155; padding-top: 6px; line-height: 1.4;">' +
+        (rec ? ('<div style="font-size: 10px; color: #94a3b8; border-top: 1px solid #334155; padding-top: 6px; line-height: 1.4;">' +
           '<strong>Порада:</strong> ' + rec +
-        '</div>';
+        '</div>') : '');
 
       popover.style.display = 'block';
       const previewEl = document.getElementById('preview-container');
@@ -3506,6 +3595,7 @@ export default function App() {
                       </p>
                     </div>
 
+                    {selectedFragmentDetail.rec ? (
                     <div className="space-y-1 bg-indigo-950/50 border border-indigo-900/30 p-2.5 rounded-lg">
                       <span className="text-[10px] text-indigo-400 font-extrabold block uppercase tracking-wide flex items-center gap-1">
                         <Sparkles className="w-3.5 h-3.5 text-amber-400" />
@@ -3515,6 +3605,7 @@ export default function App() {
                       {selectedFragmentDetail.rec}
                     </p>
                   </div>
+                    ) : null}
                 </div>
                 )}
               </div>

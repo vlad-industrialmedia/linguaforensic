@@ -18,6 +18,7 @@ export interface StructuralPattern {
   marker: string;
   quote: string;
   description: string;
+  recommendation?: string;
 }
 
 export interface Mode2Result {

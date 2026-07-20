@@ -1168,11 +1168,26 @@ export default function App() {
           foundEl?.classList.remove('ring-2', 'ring-indigo-500', 'ring-offset-1');
         }, 2500);
 
-        const containerRect = container.getBoundingClientRect();
-        const targetRect = foundEl.getBoundingClientRect();
-        const top = targetRect.bottom - containerRect.top + container.scrollTop + 10;
-        const left = Math.max(10, Math.min(containerRect.width - 290, targetRect.left - containerRect.left));
-        style = { position: "absolute", top: `${top}px`, left: `${left}px` };
+        // Recompute after the smooth scroll settles so the popover lands on the
+        // fragment's final on-screen position.
+        setTimeout(() => {
+          const containerRect = container.getBoundingClientRect();
+          const targetRect = foundEl!.getBoundingClientRect();
+          const left = Math.max(8, Math.min(containerRect.width - 296, targetRect.left - containerRect.left));
+          const spaceBelow = containerRect.bottom - targetRect.bottom;
+          let s: React.CSSProperties;
+          if (spaceBelow < 170) {
+            s = { position: "absolute", left: `${left}px`, bottom: `${container.clientHeight - (targetRect.top - containerRect.top) + 8}px` };
+          } else {
+            s = { position: "absolute", left: `${left}px`, top: `${targetRect.bottom - containerRect.top + 8}px` };
+          }
+          setSelectedFragmentDetail({
+            label: marker, quote, desc: description,
+            rec: "Рекомендація: Замініть цей вираз або структуру на менш шаблонну, розбийте речення на частини або спростіть формулювання.",
+            style: s,
+          });
+        }, 320);
+        return;
       }
 
       setSelectedFragmentDetail({
@@ -1340,8 +1355,21 @@ export default function App() {
       const targetRect = mark.getBoundingClientRect();
 
       if (containerRect) {
-        const top = targetRect.bottom - containerRect.top + previewContainerRef.current.scrollTop + 10;
-        const left = Math.max(10, Math.min(containerRect.width - 290, targetRect.left - containerRect.left));
+        const previewEl = previewContainerRef.current!;
+        // Position relative to the visible preview box (wrapper is position:relative
+        // and shares the preview's top-left). Clamp so the popover stays inside.
+        let top = targetRect.bottom - containerRect.top + 8;
+        const left = Math.max(8, Math.min(containerRect.width - 296, targetRect.left - containerRect.left));
+        // If the fragment is near the bottom of the visible area, show popover ABOVE it.
+        const spaceBelow = containerRect.bottom - targetRect.bottom;
+        if (spaceBelow < 170) {
+          top = targetRect.top - containerRect.top - 8;
+          setSelectedFragmentDetail({
+            label, quote, desc, rec,
+            style: { position: "absolute", left: `${left}px`, bottom: `${previewEl.clientHeight - (targetRect.top - containerRect.top) + 8}px` },
+          });
+          return;
+        }
 
         setSelectedFragmentDetail({
           label,
@@ -1361,39 +1389,42 @@ export default function App() {
   };
 
   const handleMarkClickInPreview = (quote: string) => {
-    setSelectedQuote(quote);
     if (mode2Result) {
       const found = mode2Result.structuralPatterns.find(p => p.quote.toLowerCase() === quote.toLowerCase());
       if (found) {
-        setSelectedFragmentDetail({
-          label: found.marker,
-          quote: found.quote,
-          desc: found.description,
-          rec: "Рекомендація: Замініть цей вираз або структуру на менш шаблонну, розбийте речення на частини або спростіть формулювання.",
-          style: {
-            position: "absolute",
-            top: "100px",
-            left: "50%",
-            transform: "translateX(-50%)",
-          }
-        });
+        openPopoverForQuote(found.quote, found.marker, found.description);
+        return;
       }
     }
+    setSelectedQuote(quote);
   };
 
   const getHighlightedPreviewHtml = () => {
     const textForAnalysis = inputText;
     if (!textForAnalysis) return "";
 
-    let result = inputHtml || textForAnalysis.replace(/\n/g, "<br>");
+    const escapeHtml = (s: string) =>
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    // IMPORTANT: highlight against the PLAIN text (escaped), not inputHtml.
+    // Matching words/phrases inside rich HTML fails when words span tags or
+    // contain entities, which is why some toggles highlighted nothing. Using
+    // escaped plain text guarantees every detected fragment can be matched.
+    let result = escapeHtml(textForAnalysis).replace(/\n/g, "<br>");
 
     const escapeRegex = (string: string) => {
       return string.replace(/[-\/\\^$*+?.()|[\\\]{}]/g, "\\$&");
     };
 
+    // Normalize apostrophe variants so word lists match regardless of which
+    // apostrophe the source text uses (' vs ' vs ` vs ´).
+    const apostropheClass = "['’`´ʼ]";
+    const buildPattern = (phrase: string) =>
+      escapeRegex(phrase).replace(new RegExp(apostropheClass, "g"), apostropheClass);
+
     const replaceWordOutsideHtml = (htmlContent: string, word: string, replaceFn: (match: string) => string) => {
-      const escapedWord = escapeRegex(word);
-      const regex = new RegExp(`(<[^>]+>)|((?<=^|[^a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ’])${escapedWord}(?=$|[^a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ’]))`, "gi");
+      const escapedWord = buildPattern(word);
+      const regex = new RegExp(`(<[^>]+>)|((?<=^|[^a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ’'\`])${escapedWord}(?=$|[^a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ’'\`]))`, "gi");
       return htmlContent.replace(regex, (match, tag, wordMatch) => {
         if (tag) return tag;
         return replaceFn(wordMatch);
@@ -1401,8 +1432,8 @@ export default function App() {
     };
 
     const replaceSentenceOutsideHtml = (htmlContent: string, sentence: string, replaceFn: (match: string) => string) => {
-      const escapedSentence = escapeRegex(sentence);
-      const regex = new RegExp(`(<[^>]+>)|(${escapedSentence})`, "g");
+      const escapedSentence = buildPattern(sentence);
+      const regex = new RegExp(`(<[^>]+>)|(${escapedSentence})`, "gi");
       return htmlContent.replace(regex, (match, tag, sentenceMatch) => {
         if (tag) return tag;
         return replaceFn(sentenceMatch);
@@ -2502,7 +2533,10 @@ export default function App() {
         return;
       }
 
-      let result = inputHtml || inputText.replace(/\\n/g, "<br>");
+      function escapeHtml(s) {
+        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+      let result = escapeHtml(inputText).replace(/\\n/g, "<br>");
 
       function escapeRegex(string) {
         return string.replace(/[-\\/\\\\^$*+?.()|[\\\\\]{}]/g, "\\\\$&");
@@ -2664,14 +2698,26 @@ export default function App() {
         '</div>';
 
       popover.style.display = 'block';
+      const previewEl = document.getElementById('preview-container');
       const rect = target.getBoundingClientRect();
-      const containerRect = document.getElementById('preview-container').getBoundingClientRect();
-      
-      const top = (rect.bottom - containerRect.top) + document.getElementById('preview-container').scrollTop + 8;
-      const left = (rect.left - containerRect.left) + 8;
+      const containerRect = previewEl.getBoundingClientRect();
+      const popH = popover.offsetHeight || 150;
+      const popW = popover.offsetWidth || 288;
+
+      const baseTop = previewEl.offsetTop;
+      const baseLeft = previewEl.offsetLeft;
+      const left = baseLeft + Math.max(8, Math.min(containerRect.width - popW - 8, rect.left - containerRect.left));
+
+      const spaceBelow = containerRect.bottom - rect.bottom;
+      let top;
+      if (spaceBelow < popH + 16) {
+        top = baseTop + (rect.top - containerRect.top) - popH - 8;
+      } else {
+        top = baseTop + (rect.bottom - containerRect.top) + 8;
+      }
 
       popover.style.top = top + 'px';
-      popover.style.left = Math.min(left, containerRect.width - 300) + 'px';
+      popover.style.left = left + 'px';
     }
 
     function hidePopover() {
@@ -3421,50 +3467,48 @@ export default function App() {
                 </div>
               )}
 
-              <div 
-                ref={previewContainerRef}
-                onClick={handlePreviewClick}
-                onMouseUp={() => { if (previewContainerRef.current) setPreviewHeight(previewContainerRef.current.offsetHeight); }}
-                className="relative border border-slate-200 rounded-xl p-4 bg-slate-50/50 overflow-y-auto leading-relaxed text-sm prose max-w-none text-slate-800 cursor-text animate-in fade-in duration-300"
-                style={{ height: previewHeight, minHeight: 150, maxHeight: 900, resize: "vertical" }}
-                dangerouslySetInnerHTML={{ __html: getHighlightedPreviewHtml() }}
-              />
-              <div className="text-[9px] text-slate-400 text-right mt-1 flex items-center justify-end gap-1 select-none">
-                <MoveVertical className="w-3 h-3" /> Потягніть за нижній край, щоб змінити висоту вікна
-              </div>
-
-              {selectedFragmentDetail && (
+              <div className="relative">
                 <div 
-                  style={selectedFragmentDetail.style}
-                  className="z-50 w-72 bg-slate-900 text-white rounded-xl shadow-xl p-4 border border-slate-700/50 flex flex-col gap-2.5 animate-in fade-in zoom-in-95 duration-150"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="flex justify-between items-start">
-                    <span className="text-[10px] font-extrabold text-indigo-300 uppercase tracking-wider bg-indigo-950/80 border border-indigo-800/40 px-2 py-0.5 rounded">
-                      {selectedFragmentDetail.label || "Лингвістичний маркер"}
-                    </span>
-                    <button 
-                      onClick={() => setSelectedFragmentDetail(null)}
-                      className="text-slate-400 hover:text-white transition-colors p-1 rounded-full hover:bg-slate-800 cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                  ref={previewContainerRef}
+                  onClick={handlePreviewClick}
+                  onMouseUp={() => { if (previewContainerRef.current) setPreviewHeight(previewContainerRef.current.offsetHeight); }}
+                  className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 overflow-y-auto leading-relaxed text-sm prose max-w-none text-slate-800 cursor-text animate-in fade-in duration-300"
+                  style={{ height: previewHeight, minHeight: 150, maxHeight: 900, resize: "vertical" }}
+                  dangerouslySetInnerHTML={{ __html: getHighlightedPreviewHtml() }}
+                />
 
-                  <div className="text-xs text-slate-200 leading-relaxed italic border-l-2 border-amber-500 pl-2 bg-slate-800/30 py-1 pr-1 rounded">
-                    "{selectedFragmentDetail.quote}"
-                  </div>
+                {selectedFragmentDetail && (
+                  <div 
+                    style={selectedFragmentDetail.style}
+                    className="z-50 w-72 bg-slate-900 text-white rounded-xl shadow-xl p-4 border border-slate-700/50 flex flex-col gap-2.5 animate-in fade-in zoom-in-95 duration-150"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex justify-between items-start">
+                      <span className="text-[10px] font-extrabold text-indigo-300 uppercase tracking-wider bg-indigo-950/80 border border-indigo-800/40 px-2 py-0.5 rounded">
+                        {selectedFragmentDetail.label || "Лингвістичний маркер"}
+                      </span>
+                      <button 
+                        onClick={() => setSelectedFragmentDetail(null)}
+                        className="text-slate-400 hover:text-white transition-colors p-1 rounded-full hover:bg-slate-800 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
 
-                  <div className="space-y-1">
-                    <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wide">Опис проблеми:</span>
-                    <p className="text-xs text-slate-300 leading-relaxed">
-                      {selectedFragmentDetail.desc}
-                    </p>
-                  </div>
+                    <div className="text-xs text-slate-200 leading-relaxed italic border-l-2 border-amber-500 pl-2 bg-slate-800/30 py-1 pr-1 rounded">
+                      "{selectedFragmentDetail.quote}"
+                    </div>
 
-                  <div className="space-y-1 bg-indigo-950/50 border border-indigo-900/30 p-2.5 rounded-lg">
-                    <span className="text-[10px] text-indigo-400 font-extrabold block uppercase tracking-wide flex items-center gap-1">
-                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    <div className="space-y-1">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wide">Опис проблеми:</span>
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        {selectedFragmentDetail.desc}
+                      </p>
+                    </div>
+
+                    <div className="space-y-1 bg-indigo-950/50 border border-indigo-900/30 p-2.5 rounded-lg">
+                      <span className="text-[10px] text-indigo-400 font-extrabold block uppercase tracking-wide flex items-center gap-1">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-400" />
                       Рекомендація копірайтеру:
                     </span>
                     <p className="text-[11px] text-indigo-100 leading-relaxed font-medium">
@@ -3472,7 +3516,11 @@ export default function App() {
                     </p>
                   </div>
                 </div>
-              )}
+                )}
+              </div>
+              <div className="text-[9px] text-slate-400 text-right mt-1 flex items-center justify-end gap-1 select-none">
+                <MoveVertical className="w-3 h-3" /> Потягніть за нижній край, щоб змінити висоту вікна
+              </div>
             </div>
           </div>
 

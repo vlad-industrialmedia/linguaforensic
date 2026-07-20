@@ -1135,7 +1135,7 @@ export default function App() {
     }, 2000);
   };
 
-  const openPopoverForQuote = (quote: string, marker: string, description: string) => {
+  const openPopoverForQuote = (quote: string, marker: string, description: string, recommendation: string = "") => {
     if (selectedQuote && selectedQuote.toLowerCase() === quote.toLowerCase()) {
       setSelectedQuote(null);
       setSelectedFragmentDetail(null);
@@ -1183,7 +1183,7 @@ export default function App() {
           }
           setSelectedFragmentDetail({
             label: marker, quote, desc: description,
-            rec: "",
+            rec: recommendation,
             style: s,
           });
         }, 320);
@@ -1194,7 +1194,7 @@ export default function App() {
         label: marker,
         quote: quote,
         desc: description,
-        rec: "",
+        rec: recommendation,
         style,
       });
     }, 150);
@@ -1392,7 +1392,7 @@ export default function App() {
     if (mode2Result) {
       const found = mode2Result.structuralPatterns.find(p => p.quote.toLowerCase() === quote.toLowerCase());
       if (found) {
-        openPopoverForQuote(found.quote, found.marker, found.description);
+        openPopoverForQuote(found.quote, found.marker, found.description, found.recommendation || "Замініть цей шаблонний фрагмент живішим формулюванням: розбийте його, змініть структуру або перефразуйте своїми словами.");
         return;
       }
     }
@@ -1689,7 +1689,8 @@ export default function App() {
           ? "bg-amber-300 border-b-2 border-amber-600 font-extrabold px-1 py-0.5 rounded-md cursor-pointer text-slate-950 shadow-md ring-2 ring-amber-400 scale-[1.02] inline-block transition-all duration-300 animate-pulse"
           : "bg-red-100 border-b-2 border-red-500 font-medium px-0.5 rounded-sm cursor-pointer hover:bg-red-200 text-slate-900 transition-colors";
 
-        const tooltipHtml = `class="${hlClass}" data-interactive-mark="true" data-quote="${encodeURIComponent(p.quote)}" data-type="structural" data-label="${encodeURIComponent(p.marker)}" data-desc="${encodeURIComponent(p.description)}" data-rec="${encodeURIComponent("")}"`;
+        const patRec = (p as any).recommendation || "Замініть цей шаблонний фрагмент живішим формулюванням: розбийте його, змініть структуру або перефразуйте своїми словами.";
+        const tooltipHtml = `class="${hlClass}" data-interactive-mark="true" data-quote="${encodeURIComponent(p.quote)}" data-type="structural" data-label="${encodeURIComponent(p.marker)}" data-desc="${encodeURIComponent(p.description)}" data-rec="${encodeURIComponent(patRec)}"`;
         const cleanQuote = p.quote.trim().replace(/^["'«»„“]+|["'«»„“.!?,;:]+$/g, "");
         if (!cleanQuote) return;
 
@@ -2363,6 +2364,7 @@ export default function App() {
                 </div>
                 <div class="pattern-quote">"${p.quote}"</div>
                 <div class="pattern-desc">${p.description}</div>
+                ${p.recommendation ? `<div class="pattern-desc" style="margin-top:6px;color:#4338ca;background:#eef2ff;border:1px solid #e0e7ff;border-radius:8px;padding:6px 8px;"><strong>Рекомендація:</strong> ${p.recommendation}</div>` : ""}
               </div>
             `).join("")}
           </div>
@@ -2455,7 +2457,7 @@ export default function App() {
     window.__patternMeta = {};
     if (mode2Result && mode2Result.structuralPatterns) {
       mode2Result.structuralPatterns.forEach(function(p){
-        window.__patternMeta[String(p.quote).toLowerCase()] = { marker: p.marker, description: p.description };
+        window.__patternMeta[String(p.quote).toLowerCase()] = { marker: p.marker, description: p.description, recommendation: p.recommendation || "Замініть цей шаблонний фрагмент живішим формулюванням: розбийте його, змініть структуру або перефразуйте своїми словами." };
       });
     }
 
@@ -2755,7 +2757,7 @@ export default function App() {
           // listed in "Виявлені кліше та структурні ШІ-маркери").
           if (mode2Result && mode2Result.structuralPatterns) {
             mode2Result.structuralPatterns.forEach(function(p){
-              var attrs = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="' + encodeURIComponent(p.marker) + '" data-desc="' + encodeURIComponent(p.description) + '" data-rec="' + encodeURIComponent("") + '"';
+              var attrs = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="' + encodeURIComponent(p.marker) + '" data-desc="' + encodeURIComponent(p.description) + '" data-rec="' + encodeURIComponent(p.recommendation || "Замініть цей шаблонний фрагмент живішим формулюванням: розбийте його, змініть структуру або перефразуйте своїми словами.") + '"';
               var cq = String(p.quote).trim().replace(/^["'«»„“]+|["'«»„“.!?,;:]+$/g, "");
               if (!cq) return;
               var hf = function(fragment){
@@ -2787,7 +2789,7 @@ export default function App() {
         var meta = (window.__patternMeta && window.__patternMeta[selectedQuote.toLowerCase()]) || {};
         var label = meta.marker || "Структурний ШІ-маркер";
         var desc = meta.description || "Виявлений шаблонний фрагмент";
-        var attrs = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="' + encodeURIComponent(label) + '" data-desc="' + encodeURIComponent(desc) + '" data-rec="' + encodeURIComponent("") + '"';
+        var attrs = 'class="hl-span hl-structural-pattern" data-interactive-mark="true" data-label="' + encodeURIComponent(label) + '" data-desc="' + encodeURIComponent(desc) + '" data-rec="' + encodeURIComponent(meta.recommendation || "Замініть цей шаблонний фрагмент живішим формулюванням: розбийте його, змініть структуру або перефразуйте своїми словами.") + '"';
         var cleanQuote = selectedQuote.trim().replace(/^["'«»„“]+|["'«»„“.!?,;:]+$/g, "");
         if (cleanQuote.length > 0) {
           var highlightFrag = function(fragment) {
@@ -4041,7 +4043,7 @@ export default function App() {
                               key={pIdx} 
                               id={`pattern-card-${encodeURIComponent(pat.quote)}`}
                               onClick={() => {
-                                openPopoverForQuote(pat.quote, pat.marker, pat.description);
+                                openPopoverForQuote(pat.quote, pat.marker, pat.description, pat.recommendation || "Замініть цей шаблонний фрагмент живішим формулюванням: розбийте його, змініть структуру або перефразуйте своїми словами.");
                               }}
                               className={`border rounded-xl p-3 space-y-2 transition-all cursor-pointer ${
                                 isSelected 
@@ -4057,6 +4059,11 @@ export default function App() {
                                 "{pat.quote}"
                               </blockquote>
                               <p className="text-[11px] text-slate-500">{pat.description}</p>
+                              {pat.recommendation && (
+                                <p className="text-[11px] text-indigo-700 bg-indigo-50/60 border border-indigo-100 rounded-lg px-2 py-1.5 leading-relaxed">
+                                  <span className="font-bold">Рекомендація: </span>{pat.recommendation}
+                                </p>
+                              )}
                             </div>
                           );
                         })}

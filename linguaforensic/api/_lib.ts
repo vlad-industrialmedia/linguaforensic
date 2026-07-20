@@ -48,7 +48,7 @@ You output an expert assessment matching the requested mode in a structured JSON
 
 CRITICAL REQUIREMENT: All output strings (verdict, domain, modelGroup, keyMarkers, category names, scores, marker descriptions, changes, stopReason, qualityAssessment, comparisons title, and conclusion) MUST be strictly in UKRAINIAN language (українською мовою).
 
-SCORING (IMPORTANT): The "score" field is the probability that the text is AI-generated, expressed as an INTEGER PERCENTAGE from 0 to 100 (write 80, never 0.80). Derive this score ONLY from the actual measured linguistic evidence in the categories below — do NOT anchor to any default value. Weigh the domain-adapted category scores and the structural markers you actually detect. Many genuinely human-written texts (including professional copywriting, journalism, and marketing) legitimately score LOW (10-45) even when well-structured: good structure alone is NOT evidence of AI. Reserve high scores (70-100) for texts that actually exhibit the AI fingerprint — very high TTR combined with low sentence-length variance (CV<0.3), near-absent hedges, uniform paragraph structure, and multiple template markers together. If the evidence is weak or mixed, the score MUST be correspondingly low or moderate. Two different human texts should NOT both land on the same number — let the measured features spread the scores out.
+SCORING: The "score" field is the probability that the text is AI-generated ("роботність"), expressed as an INTEGER PERCENTAGE from 0 to 100 (write 78, never 0.78). Compute it strictly by the expert methodology below: measure each category, apply the domain-adaptation weights, and combine the weighted category scores together with the detected structural markers into the final percentage. Do not output a 0-1 fraction and do not invent a round default — the number must follow from the measured features.
 
 Below is the expert methodology you MUST apply:
 1. CATEGORIES OF FEATURES:
@@ -167,13 +167,14 @@ export const Mode2Schema = {
     },
     structuralPatterns: {
       type: Type.ARRAY,
-      description: "Усі виявлені кліше та структурні ШІ-маркери по ВСЬОМУ тексту (для довгого тексту — 8-20+, не лише кілька).",
+      description: "ВИЧЕРПНИЙ список УСІХ виявлених кліше та структурних ШІ-маркерів по ВСЬОМУ тексту від початку до кінця. Створіть ОКРЕМИЙ запис для КОЖНОГО окремого випадку, навіть якщо маркери одного типу повторюються (напр. якщо в тексті два різні списки — додайте ДВА окремі записи 'Надмірне використання списків', по одному на кожен список, з різними цитатами). Не об'єднуйте повтори в один запис і не обмежуйтесь кількома прикладами. Для тексту на 3000+ символів очікується 8-25+ записів; для дуже довгого (15-30к) — пропорційно більше.",
       items: {
         type: Type.OBJECT,
         properties: {
-          marker: { type: Type.STRING, description: "Назва типу маркера (напр. 'Хедж-опенери', 'Триколон-листи')" },
-          quote: { type: Type.STRING, description: "ТОЧНА дослівна цитата з наданого тексту (verbatim, слово-в-слово, без змін), яку треба підсвітити. Копіюйте фрагмент прямо з тексту." },
-          description: { type: Type.STRING, description: "Пояснення проблеми на основі САМЕ цієї цитати з тексту та конкретна рекомендація, як її переписати. НЕ використовуйте вигадані шаблонні приклади ('ШІ пише тексти...'); посилайтесь на реальний фрагмент." },
+          marker: { type: Type.STRING, description: "Назва типу маркера (напр. 'Хедж-опенери', 'Триколон-листи', 'Надмірне використання списків')" },
+          quote: { type: Type.STRING, description: "ТОЧНА дослівна цитата з наданого тексту (verbatim, слово-в-слово, без змін) для цього конкретного випадку. Копіюйте фрагмент прямо з тексту. Для різних випадків одного типу — різні цитати." },
+          description: { type: Type.STRING, description: "Стисле пояснення, ЧОМУ саме цей фрагмент є проблемним (на основі реальної цитати). Без вигаданих прикладів." },
+          recommendation: { type: Type.STRING, description: "Конкретна практична порада копірайтеру, як переписати САМЕ цей фрагмент, щоб прибрати ШІ-маркер. Конкретно по суті, з прив'язкою до цитати." },
         },
         required: ["marker", "quote", "description"],
       },
@@ -310,7 +311,7 @@ export function buildPrompt(
     return `
       Виконайте Режим 1 (Швидка детекція) для наступного тексту.
       Проведіть аналіз 284 лінгвістичних параметрів та 16 структурних маркерів.
-      Оцінку роботності (score) виведіть ВИКЛЮЧНО з реально виміряних ознак цього тексту (CV довжини речень, TTR, гапакс, хеджі, шаблонні маркери тощо). Не підставляйте типове чи заокруглене число. Природний людський текст із живою варіативністю має отримати НИЗЬКУ оцінку, навіть якщо він структурований.
+      Оцінку роботності (score) обчисліть строго за методологією: виміряйте категорії, застосуйте вагові коефіцієнти за доменом і поєднайте їх зі знайденими структурними маркерами. Не підставляйте заокруглене число «зі стелі» — воно має випливати з вимірів.
       Поверніть строго JSON відповідно до схеми Mode1Schema.
       ${optimizationNotice}
 
@@ -325,7 +326,7 @@ export function buildPrompt(
       Виконайте Режим 2 (Повна детекція з деталями) для наступного тексту.
       Проведіть детальний розрахунок за всіма 12 категоріями оцінок (включаючи вагу за доменом та внесок у загальну оцінку), розрахуйте всі ключові числові індикатори (TTR, щільність, гапакс, ентропія, CV, дерево залежностей, число хеджів, Flesch Reading Ease, діапазон валентності) та виявіть структурні патерни з конкретними цитатами.
       Дайте обґрунтування групи моделі та детальний розгорнутий висновок.
-      Загальна оцінка (score) мусить логічно випливати із суми виважених за доменом оцінок категорій — не підставляйте типове/заокруглене число і не anchor-те до попередніх результатів. Різні тексти повинні давати різні оцінки. Живий людський текст із високою варіативністю речень, хеджами та відступами отримує НИЗЬКУ оцінку навіть за наявності структури.
+      Загальна оцінка (score) мусить логічно випливати із суми виважених за доменом оцінок категорій та знайдених структурних маркерів — обчисліть її за методологією, не підставляйте заокруглене число «зі стелі».
       ДОДАТКОВО оцініть придатність тексту для цитування нейромережами (AI Overview / GEO): заповніть aiOverviewScore (0-100), aiOverviewVerdict (короткий вердикт), aiOverviewTips (2-4 поради: чіткість відповіді на початку блоку, наявність фактів/визначень, структура під сніпет, унікальність) та suggestedTldr (готовий стислий TL;DR на 2-3 речення, який ШІ міг би процитувати). Усе — українською.
       Поверніть строго JSON відповідно до схеми Mode2Schema.
       ${optimizationNotice}

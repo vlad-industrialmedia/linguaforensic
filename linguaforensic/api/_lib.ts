@@ -167,12 +167,13 @@ export const Mode2Schema = {
     },
     structuralPatterns: {
       type: Type.ARRAY,
+      description: "Усі виявлені кліше та структурні ШІ-маркери по ВСЬОМУ тексту (для довгого тексту — 8-20+, не лише кілька).",
       items: {
         type: Type.OBJECT,
         properties: {
-          marker: { type: Type.STRING },
-          quote: { type: Type.STRING },
-          description: { type: Type.STRING },
+          marker: { type: Type.STRING, description: "Назва типу маркера (напр. 'Хедж-опенери', 'Триколон-листи')" },
+          quote: { type: Type.STRING, description: "ТОЧНА дослівна цитата з наданого тексту (verbatim, слово-в-слово, без змін), яку треба підсвітити. Копіюйте фрагмент прямо з тексту." },
+          description: { type: Type.STRING, description: "Пояснення проблеми на основі САМЕ цієї цитати з тексту та конкретна рекомендація, як її переписати. НЕ використовуйте вигадані шаблонні приклади ('ШІ пише тексти...'); посилайтесь на реальний фрагмент." },
         },
         required: ["marker", "quote", "description"],
       },
@@ -302,7 +303,7 @@ export function buildPrompt(
   const textLength = text ? text.length : 0;
   const isLongText = textLength > 3500;
   const optimizationNotice = isLongText
-    ? `\n\n[NOTE: The input text is long (${textLength} characters). Keep DESCRIPTIVE prose (category descriptions, marker descriptions, conclusion) concise to avoid timeouts, and report the most important structural patterns rather than every occurrence. This note affects only verbosity of descriptions — it must NOT change how accurately you measure features or compute the score. Analyze the ENTIRE text.]`
+    ? `\n\n[NOTE: The input text is long (${textLength} characters). Keep each DESCRIPTIVE string (category descriptions, marker descriptions, conclusion) short — one sentence — to save space. But you MUST still scan the ENTIRE text from start to finish and report EVERY distinct clichе / structural AI-marker you find across ALL paragraphs (aim for 8-20+ for a long text, not just a couple). Do not stop after the first paragraph. Accuracy of measurement and score must not change.]`
     : "";
 
   if (mode === 1) {
@@ -414,16 +415,83 @@ export function parseModelJson(raw: string): any {
   try {
     return JSON.parse(cleaned);
   } catch {
-    // Some models add stray text before/after the JSON object.
-    // Fall back to extracting the outermost {...} block.
+    // 1) Strip stray text before/after the JSON object.
     const first = cleaned.indexOf("{");
     const last = cleaned.lastIndexOf("}");
     if (first !== -1 && last !== -1 && last > first) {
       const candidate = cleaned.slice(first, last + 1);
-      return JSON.parse(candidate);
+      try {
+        return JSON.parse(candidate);
+      } catch {
+        /* fall through to repair */
+      }
     }
-    throw new Error("Модель повернула невалідний JSON.");
+    // 2) Attempt to repair a TRUNCATED JSON (model hit the token limit
+    //    mid-array/object). Close any open strings/brackets so we keep as much
+    //    valid data as possible instead of failing the whole analysis.
+    const repaired = repairTruncatedJson(first !== -1 ? cleaned.slice(first) : cleaned);
+    if (repaired) {
+      try {
+        return JSON.parse(repaired);
+      } catch {
+        /* noop */
+      }
+    }
+    throw new Error("Модель повернула невалідний або обрізаний JSON.");
   }
+}
+
+/**
+ * Best-effort repair of a JSON string that was cut off mid-output.
+ * Removes a dangling trailing token and closes open strings, arrays and objects.
+ */
+function repairTruncatedJson(s: string): string | null {
+  if (!s) return null;
+  let str = s;
+
+  // Track structure while respecting strings/escapes.
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  let lastComma = -1;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (inString) {
+      if (escaped) { escaped = false; }
+      else if (c === "\\") { escaped = true; }
+      else if (c === '"') { inString = false; }
+      continue;
+    }
+    if (c === '"') { inString = true; continue; }
+    if (c === "{" || c === "[") stack.push(c);
+    else if (c === "}" || c === "]") stack.pop();
+    else if (c === ",") lastComma = i;
+  }
+
+  // If we ended inside a string, drop the unterminated tail back to the last comma.
+  if (inString) {
+    if (lastComma !== -1) { str = str.slice(0, lastComma); }
+    else return null;
+    // recompute stack after the cut
+    return repairTruncatedJson(str);
+  }
+
+  // Remove a trailing partial value / dangling comma.
+  str = str.replace(/,\s*$/, "");
+  // If the last element is incomplete (no closing quote/brace before EOF),
+  // trim back to the last complete comma-separated element.
+  const tail = str.trimEnd();
+  const lastChar = tail[tail.length - 1];
+  if (lastChar && !["}", "]", '"'].includes(lastChar) && !/[0-9truefalsenul]/.test(lastChar)) {
+    if (lastComma !== -1 && lastComma < str.length) str = str.slice(0, lastComma);
+  }
+
+  // Close any still-open brackets in reverse order.
+  let out = str.replace(/,\s*$/, "");
+  for (let i = stack.length - 1; i >= 0; i--) {
+    out += stack[i] === "{" ? "}" : "]";
+  }
+  return out;
 }
 
 const toNum = (v: string | null): number | null => {
@@ -544,11 +612,14 @@ export async function runAnalysis(params: {
     : (text?.length || 0);
   const inputTokens = Math.ceil(inputLen / 3);
   let maxOutputTokens: number;
-  if (mode === 3) maxOutputTokens = Math.min(32000, inputTokens * 2 + 1500);
-  else if (mode === 4) maxOutputTokens = Math.min(32000, inputTokens * 3 + 2500);
-  else if (mode === 5) maxOutputTokens = Math.min(16000, inputTokens + 3000);
-  else if (mode === 2) maxOutputTokens = 8000;
-  else maxOutputTokens = 2000;
+  if (mode === 3) maxOutputTokens = Math.min(32000, inputTokens * 2 + 2000);
+  else if (mode === 4) maxOutputTokens = Math.min(32000, inputTokens * 3 + 3000);
+  else if (mode === 5) maxOutputTokens = Math.min(24000, inputTokens + 4000);
+  // Mode 2 returns 12 categories + many structural patterns + AI-overview +
+  // conclusion. It must scale with input, otherwise long texts truncate the
+  // JSON mid-array (the "Expected ',' or ']'" error) and drop markers.
+  else if (mode === 2) maxOutputTokens = Math.min(24000, 6000 + inputTokens * 2);
+  else maxOutputTokens = Math.min(8000, 2000 + inputTokens);
 
   // ---- Gemini path ----
   if (provider === "gemini") {

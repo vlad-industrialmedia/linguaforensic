@@ -618,6 +618,78 @@ const PRIORITY_STYLES: Record<string, { bg: string; text: string; title: string 
   "Н": { bg: "bg-slate-100", text: "text-slate-500", title: "Низький пріоритет" },
 };
 
+// Clean pasted HTML down to a safe formatting allowlist so we KEEP headings,
+// lists, tables, bold/italic and links, but DROP inline styles, classes, <div>
+// soup, spans, fonts and other junk that breaks the editor (e.g. whole text
+// becoming an <h1>). Runs in the browser via DOMParser.
+const PASTE_ALLOWED_TAGS = new Set([
+  "p","br","ul","ol","li","h1","h2","h3","h4","h5","h6",
+  "strong","b","em","i","u","s","blockquote","a",
+  "table","thead","tbody","tr","td","th","hr","code","pre",
+]);
+
+function sanitizePastedHtml(html: string): string {
+  try {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+
+    const walk = (node: Node): Node[] => {
+      const out: Node[] = [];
+      node.childNodes.forEach((child) => {
+        if (child.nodeType === Node.TEXT_NODE) {
+          out.push(child.cloneNode(true));
+          return;
+        }
+        if (child.nodeType !== Node.ELEMENT_NODE) return;
+        const el = child as HTMLElement;
+        let tag = el.tagName.toLowerCase();
+
+        // Word/Docs often wrap everything in styled <div>s. Demote them to
+        // paragraphs so structure survives without the junk.
+        if (tag === "div") tag = "p";
+
+        const children = walk(el);
+
+        if (!PASTE_ALLOWED_TAGS.has(tag)) {
+          out.push(...children); // unwrap: keep children inline
+          return;
+        }
+
+        const clean = document.createElement(tag);
+        if (tag === "a") {
+          const href = el.getAttribute("href") || "";
+          if (/^https?:|^mailto:|^\//i.test(href)) clean.setAttribute("href", href);
+          clean.setAttribute("target", "_blank");
+          clean.setAttribute("rel", "noreferrer");
+        }
+        children.forEach((c) => clean.appendChild(c));
+        out.push(clean);
+      });
+      return out;
+    };
+
+    const cleanedNodes = walk(doc.body);
+    const container = document.createElement("div");
+    cleanedNodes.forEach((n) => container.appendChild(n));
+
+    // Guard against the "everything is one giant heading" case.
+    if (container.children.length === 1) {
+      const only = container.children[0] as HTMLElement;
+      if (/^h[1-6]$/i.test(only.tagName) && (only.textContent || "").length > 200) {
+        const p = document.createElement("p");
+        p.innerHTML = only.innerHTML;
+        container.innerHTML = "";
+        container.appendChild(p);
+      }
+    }
+
+    return container.innerHTML;
+  } catch {
+    const tmp = document.createElement("div");
+    tmp.textContent = html.replace(/<[^>]+>/g, " ");
+    return tmp.innerHTML;
+  }
+}
+
 const safeStorage = {
   getItem: (key: string): string | null => {
     try {
@@ -1213,6 +1285,33 @@ export default function App() {
     const text = e.currentTarget.innerText;
     setInputHtml(html);
     setInputText(text);
+  };
+
+  const handleEditorPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const clip = e.clipboardData;
+    const rawHtml = clip.getData("text/html");
+    const plain = clip.getData("text/plain");
+    let toInsert: string;
+    if (rawHtml && rawHtml.trim()) {
+      toInsert = sanitizePastedHtml(rawHtml);
+    } else {
+      // Plain text: preserve paragraph breaks.
+      toInsert = plain
+        .split(/\n{2,}/)
+        .map((p) => `<p>${p.replace(/\n/g, "<br>").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`)
+        .join("");
+    }
+    // Insert sanitized HTML at the caret.
+    try {
+      document.execCommand("insertHTML", false, toInsert);
+    } catch {
+      if (editorRef.current) editorRef.current.innerHTML += toInsert;
+    }
+    if (editorRef.current) {
+      setInputHtml(editorRef.current.innerHTML);
+      setInputText(editorRef.current.innerText);
+    }
   };
 
   const handleAnalyze = async () => {
@@ -3346,6 +3445,7 @@ export default function App() {
                           ref={editorRef}
                           contentEditable
                           onInput={handleEditorInput}
+                          onPaste={handleEditorPaste}
                           className="w-full min-h-[300px] p-4 outline-hidden focus:ring-1 focus:ring-indigo-500 overflow-y-auto leading-relaxed text-sm prose max-w-none text-slate-800"
                           style={{ direction: "ltr" }}
                           data-placeholder="Введіть або вставте відформатований текст з усіма абзацами та заголовками..."

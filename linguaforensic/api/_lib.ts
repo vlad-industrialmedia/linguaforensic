@@ -48,7 +48,7 @@ You output an expert assessment matching the requested mode in a structured JSON
 
 CRITICAL REQUIREMENT: All output strings (verdict, domain, modelGroup, keyMarkers, category names, scores, marker descriptions, changes, stopReason, qualityAssessment, comparisons title, and conclusion) MUST be strictly in UKRAINIAN language (українською мовою).
 
-SCORING: The "score" field is the probability that the text is AI-generated ("роботність"), expressed as an INTEGER PERCENTAGE from 0 to 100 (write 78, never 0.78). Compute it strictly by the expert methodology below: measure each category, apply the domain-adaptation weights, and combine the weighted category scores together with the detected structural markers into the final percentage. Do not output a 0-1 fraction and do not invent a round default — the number must follow from the measured features.
+SCORING: The "score" field is the probability that the text is AI-generated ("роботність"), expressed as an INTEGER PERCENTAGE from 0 to 100 (write 78, never 0.78). Compute it strictly by the expert methodology below: measure each category, apply the domain-adaptation weights, and combine the weighted category scores together with the detected structural markers into the final percentage. Do not output a 0-1 fraction and do not invent a round default — the number must follow from the measured features. The score reflects the WHOLE-TEXT statistical fingerprint (rhythm, lexical richness, entropy, morphology), NOT merely the count of quoted structural markers. That is why removing a few flagged fragments may barely move the score if the underlying rhythm/lexical statistics are unchanged — say this in the conclusion when relevant so the user understands the score is holistic.
 
 Below is the expert methodology you MUST apply:
 1. CATEGORIES OF FEATURES:
@@ -81,6 +81,21 @@ Below is the expert methodology you MUST apply:
    - 12.14 Uniform paragraph lengths (CV of length < 0.3) - high in AI.
    - 12.15 Absence of digressions/sidetracks (linear flow, 0 digressions) - high in AI.
    - 12.16 Redundant explanations of obvious terms ("нейромережі — це...") - high in AI.
+
+2b. FLAGGING THRESHOLDS — "GOLDEN RULES" (apply these so you flag REAL problems, not acceptable usage):
+   These thresholds decide what counts as a structural problem worth reporting. Acceptable usage below the threshold must NOT be flagged.
+   - LISTS & TABLES: ONE list OR table in the whole text is ACCEPTABLE and often useful — do NOT flag a single, reasonably-sized list/table. Flag ONLY when: there are 2+ lists/tables, OR lists exceed ~15% of the total text volume, OR technical characteristics are dumped as "A; B; C" enumerations instead of prose. When flagging multiple lists, create a SEPARATE structuralPattern entry for EACH offending list beyond the first, quoting each one.
+   - HEADINGS/RUBRICATION: acceptable at ~1 heading per 3+ paragraphs. Flag only excessive rubrication (a heading almost every paragraph).
+   - HEDGES: 4-7 per 500 words is the HUMAN norm — do NOT treat presence of hedges as AI. Flag near-ABSENCE (0-2 per 500 words).
+   - DISCOURSE PARTICLES: 3-6 per 500 words is human. Both near-absence (<2) AND overuse (>8, "performative chattiness") are flags.
+   - EM-DASHES: flag only clusters (3+ per paragraph), not normal single dashes.
+   - EXEMPLIFICATION ("наприклад", "як-от"): acceptable up to ~3-4 per 500 words; flag only clear overuse.
+   - INTENSIFIERS / COHESIVE BRIDGES: flag only when above ~2 per 500 words.
+   - SHORT SENTENCES: BOTH deficit and excess are flags. 15-25% short (≤10 words) scattered is healthy; >40% short = "chopped AI rhythm".
+   Do NOT invent a problem where usage is within these norms. If a feature is within the human norm, it is EVIDENCE OF HUMAN writing, not a marker.
+
+2c. PERFORMATIVE CHATTINESS (heavy modern marker — RLHF models fake "liveliness"):
+   Flag these as structural markers when present: fake-spoken connectors ("скажу чесно", "не буду приховувати", "до неприличия просто", "відповім як інженер", "повірте", "і слава богу"), section-opening announcements ("розкажу…", "давайте розберемо…", "зберу в одному місці…"), and emotional-evaluative section closers ("різниця колосальна", "змінює все", "величезна"). These are AI-tells even though they look "human".
 
 3. DOMAIN ADAPTATION WEIGHTS:
    Apply different weights to categories based on the detected domain:

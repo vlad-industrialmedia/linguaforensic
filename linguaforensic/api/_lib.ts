@@ -67,6 +67,7 @@ Below is the expert methodology you MUST apply:
    - 1.11 Psycholinguistic (Психолінгвістичний): AI has moderate concreteness, age of acquisition, etc.
 
 2. 16 STRUCTURAL MARKERS OF GENERATION (Category 12):
+   [IMPORTANT: All quoted phrases in this section are ILLUSTRATIONS of marker TYPES, mostly in Ukrainian. They are NEVER to be output as quote values. When you report a structuralPattern, its quote field MUST be a verbatim substring copied from the ANALYSED text, in the SAME language as that text. If the text is Russian, quotes must be Russian fragments from that text; never emit these Ukrainian sample phrases as if found.]
    - 12.1 Hedge-openers (e.g. "Варто зазначити, що", "Важливо підкреслити", "У сучасному світі", "Слід зазначити") - high in AI (>=2).
    - 12.2 Tricolon-lists / parallel structure (lists of parallel items, "Для X — …, для Y — …, для Z — …") - this is also a legitimate RHETORICAL device (anaphora) used by live authors. Do NOT flag a single parallel triple. Flag ONLY when there are 4+ parallel repetitions with identical grammatical openings, OR the items have near-identical length (CV of item length < 0.2). Weight this marker at HALF of the other structural markers.
    - 12.3 Em-dash clusters (>=3 per paragraph) - high in AI.
@@ -86,9 +87,11 @@ Below is the expert methodology you MUST apply:
 
 2b. FLAGGING THRESHOLDS — "GOLDEN RULES" (apply these so you flag REAL problems, not acceptable usage):
    These thresholds decide what counts as a structural problem worth reporting. Acceptable usage below the threshold must NOT be flagged.
-   - LISTS & TABLES: ONE list OR table in the whole text is ACCEPTABLE and often useful — do NOT flag a single, reasonably-sized list/table. Flag ONLY when: there are 2+ lists/tables, OR lists exceed ~15% of the total text volume, OR technical characteristics are dumped as "A; B; C" enumerations instead of prose. When flagging multiple lists, create a SEPARATE structuralPattern entry for EACH offending list beyond the first, quoting each one.
+   - LISTS & TABLES: ONE list OR table in the whole text is ACCEPTABLE and often useful — do NOT flag a single, reasonably-sized list/table. A single comparison TABLE and a single FAQ block are NORMAL (genre/SEO requirement) — do NOT create a structuralPattern for them. A TABLE and a FAQ are DIFFERENT entities — never sum them into one "too many lists" count. Flag a table ONLY if there are multiple tables OR every cell has identical length/structure (machine-uniform). Flag lists ONLY when: 2+ separate lists, OR lists exceed ~15% of total volume, OR characteristics dumped as "A; B; C" enumerations instead of prose. When flagging multiple lists, one SEPARATE structuralPattern per offending list beyond the first.
+   - FAQ / Q&A BLOCKS: a FAQ with substantive, varied-length answers is a legitimate SEO structure (FAQ-schema, featured snippets) — do NOT flag it as a list or AI-structure.
+   - QUESTION HEADINGS: interrogative subheadings ("Что именно видит платформа?") are a GOOD GEO practice (direct answer to a user query) — do NOT flag them. Flag "uniform question-heading structure" ONLY when ESSENTIALLY ALL headings in the text are questions (true uniformity). A mix of question and statement headings is NORMAL. This must stay consistent with the GEO module, which REWARDS question headings.
    - HEADINGS/RUBRICATION: acceptable at ~1 heading per 3+ paragraphs. Flag only excessive rubrication (a heading almost every paragraph).
-   - HEDGES: 4-7 per 500 words is the HUMAN norm — do NOT treat presence of hedges as AI. Flag near-ABSENCE (0-2 per 500 words).
+   - HEDGES: 4-7 per 500 words is the HUMAN norm — do NOT treat presence of hedges as AI. Flag near-ABSENCE (0-2 per 500 words). Count hedges in the TEXT'S OWN language (see language notice).
    - DISCOURSE PARTICLES: 3-6 per 500 words is human. Both near-absence (<2) AND overuse (>8, "performative chattiness") are flags.
    - EM-DASHES: flag only clusters (3+ per paragraph), not normal single dashes.
    - EXEMPLIFICATION ("наприклад", "як-от"): acceptable up to ~3-4 per 500 words; flag only clear overuse.
@@ -189,7 +192,7 @@ export const Mode2Schema = {
         type: Type.OBJECT,
         properties: {
           marker: { type: Type.STRING, description: "Назва типу маркера (напр. 'Хедж-опенери', 'Триколон-листи', 'Надмірне використання списків')" },
-          quote: { type: Type.STRING, description: "ТОЧНА дослівна цитата з наданого тексту (verbatim, слово-в-слово, без змін) для цього конкретного випадку. Копіюйте фрагмент прямо з тексту. Для різних випадків одного типу — різні цитати." },
+          quote: { type: Type.STRING, description: "ТОЧНА дослівна підстрока з наданого тексту (verbatim substring), скопійована слово-в-слово. Якщо маркер не знайдено в тексті як буквальну підстроку — НЕ створюйте цей запис. КАТЕГОРИЧНО заборонено використовувати приклади-зразки з інструкцій (напр. 'Варто зазначити', 'У свою чергу') як цитати — цитата мусить бути з АНАЛІЗОВАНОГО тексту тією ж мовою, що й текст." },
           description: { type: Type.STRING, description: "Стисле пояснення, ЧОМУ саме цей фрагмент є проблемним (на основі реальної цитати). Без вигаданих прикладів." },
           recommendation: { type: Type.STRING, description: "Конкретна практична порада копірайтеру, як переписати САМЕ цей фрагмент, щоб прибрати ШІ-маркер. Конкретно по суті, з прив'язкою до цитати." },
         },
@@ -320,9 +323,13 @@ export function buildPrompt(
 ): string {
   const textLength = text ? text.length : 0;
   const isLongText = textLength > 3500;
-  const optimizationNotice = isLongText
+  const primaryText = mode === 5 ? (texts && texts[0]) || "" : text;
+  const lang = detectLang(primaryText);
+  const langName = lang === "ru" ? "РОСІЙСЬКОЮ" : "УКРАЇНСЬКОЮ";
+  const langNotice = `\n\n[МОВА ТЕКСТУ: аналізований текст написано ${langName} мовою. КРИТИЧНО: (1) кожна цитата (quote) у structuralPatterns мусить бути дослівною підстрокою саме цього тексту ${langName} мовою — НЕ підставляйте україномовні приклади-зразки з інструкцій, якщо текст російський, і навпаки; (2) детектуйте хеджі, оцінно-емоційні слова, кліше та мости САМЕ ${langName} мовою (для РОС.: «пожалуй, как правило, обычно, скорее всего, по сути, на практике, как минимум, в большинстве случаев, иногда, зачастую, по опыту» — хеджі; оцінні звороти «ценнее вдвойне, не мелочь, серьёзные суммы, в рабочем виде» — валентність). Не занижуйте лічильники через словник іншої мови; (3) marker, description та recommendation пишіть ${langName} мовою (тією ж, що й текст).]`;
+  const optimizationNotice = (isLongText
     ? `\n\n[NOTE: The input text is long (${textLength} characters). Keep each DESCRIPTIVE string (category descriptions, marker descriptions, conclusion) short — one sentence — to save space. But you MUST still scan the ENTIRE text from start to finish and report EVERY distinct clichе / structural AI-marker you find across ALL paragraphs (aim for 8-20+ for a long text, not just a couple). Do not stop after the first paragraph. Accuracy of measurement and score must not change.]`
-    : "";
+    : "") + langNotice;
 
   if (mode === 1) {
     return `
@@ -399,6 +406,7 @@ export function buildPrompt(
 
       finalText = повний фінальний переписаний текст (не уривок!). Описи (senseCheck, styleCheck тощо) тримайте стислими, але finalText — повний.
       Поверніть строго JSON відповідно до схеми Mode4Schema.
+      ${langNotice}
 
       ПОВНИЙ ТЕКСТ ДЛЯ ЦИКЛІЧНОГО РЕРАЙТУ:
       """
@@ -415,6 +423,7 @@ export function buildPrompt(
     Розрахуйте ключові лінгвістичні метрики, оцінку роботності, довірчий інтервал, домен та виявлені структурні маркери для кожного варіанту.
     Дайте експертний порівняльний висновок.
     Поверніть строго JSON відповідно до схеми Mode5Schema.
+    ${langNotice}
 
     ТЕКСТИ ДЛЯ ПОРІВНЯННЯ:
     ${formattedTexts}
@@ -585,6 +594,54 @@ export function normalizeResult(mode: number, result: any): any {
   return result;
 }
 
+/**
+ * Normalize text for verbatim substring matching (mirrors the highlighter):
+ * lowercase, unify apostrophes, collapse whitespace.
+ */
+function normalizeForMatch(s: string): string {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[’`´ʼ]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * BUG 1 FIX — drop hallucinated structural-pattern quotes.
+ * The model sometimes fills `quote` with an example phrase from the system
+ * prompt instead of a real substring of the analysed text (few-shot leakage).
+ * Any pattern whose quote is NOT a verbatim substring of the input is removed,
+ * which also corrects the "N markers found" counter and any score that leans
+ * on those phantom markers.
+ */
+export function validateStructuralPatterns(result: any, inputText: string): any {
+  if (!result || !Array.isArray(result.structuralPatterns) || !inputText) return result;
+  const haystack = normalizeForMatch(inputText);
+  result.structuralPatterns = result.structuralPatterns.filter((p: any) => {
+    if (!p || typeof p.quote !== "string") return false;
+    const q = normalizeForMatch(p.quote);
+    if (q.length < 2) return false;
+    if (haystack.includes(q)) return true;
+    // Allow a partial match: first 5 words present verbatim (covers quotes the
+    // model trimmed/extended slightly) — still guarantees the fragment is real.
+    const firstWords = q.split(" ").slice(0, 5).join(" ");
+    return firstWords.length >= 4 && haystack.includes(firstWords);
+  });
+  return result;
+}
+
+/** Rough language detection: is the text predominantly Ukrainian or Russian? */
+export function detectLang(text: string): "uk" | "ru" {
+  const t = (text || "").toLowerCase();
+  // Letters that exist in Ukrainian but not Russian.
+  const uk = (t.match(/[іїєґ]/g) || []).length;
+  // Letters that exist in Russian but not Ukrainian.
+  const ru = (t.match(/[ыэъё]/g) || []).length;
+  if (uk === 0 && ru > 0) return "ru";
+  if (ru === 0 && uk > 0) return "uk";
+  return uk >= ru ? "uk" : "ru";
+}
+
 // ---------------------------------------------------------------------------
 // Provider dispatch (OpenAI-compatible: Groq, OpenRouter, Cohere)
 // ---------------------------------------------------------------------------
@@ -659,7 +716,7 @@ export async function runAnalysis(params: {
     });
     const outputText = response.text;
     if (!outputText) throw new Error("Порожня відповідь від моделі Gemini API.");
-    return { ok: true, status: 200, json: normalizeResult(mode, parseModelJson(outputText)) };
+    return { ok: true, status: 200, json: validateStructuralPatterns(normalizeResult(mode, parseModelJson(outputText)), text) };
   }
 
   // ---- OpenAI-compatible providers ----
@@ -776,5 +833,5 @@ export async function runAnalysis(params: {
     choiceText = responseData.choices?.[0]?.message?.content || "";
   }
   if (!choiceText) throw new Error(`Порожня відповідь від провайдера ${provider}.`);
-  return { ok: true, status: 200, json: normalizeResult(mode, parseModelJson(choiceText)), rateLimit };
+  return { ok: true, status: 200, json: validateStructuralPatterns(normalizeResult(mode, parseModelJson(choiceText)), text), rateLimit };
 }
